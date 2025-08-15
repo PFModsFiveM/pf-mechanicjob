@@ -1,0 +1,182 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="wrap" style="display:none">
+    <div id="tablet">
+      <div id="statusbar">
+        <div class="brand">MechanicOS</div>
+        <div id="rankbox"></div>
+        <button id="closeBtn" class="btn-lite">✕</button>
+      </div>
+
+      <!-- HOME -->
+      <div id="home" class="view">
+        <div class="apps">
+          <div class="app" data-app="npc">
+            <div class="icon i-wrench"></div>
+            <div class="label">NPC Jobs</div>
+          </div>
+          <div class="app" data-app="pos">
+            <div class="icon i-cash"></div>
+            <div class="label">Cash Register</div>
+          </div>
+          <div class="app" data-app="boss">
+            <div class="icon i-gear"></div>
+            <div class="label">Management</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- NPC JOBS -->
+      <div id="npc" class="view" style="display:none">
+        <div class="appbar">
+          <button class="btn-lite back">←</button>
+          <h2>NPC Jobs</h2>
+          <div class="grow"></div>
+          <button id="npcToggle" class="btn">Start</button>
+        </div>
+        <div class="cols">
+          <div class="col">
+            <h3>New Jobs</h3>
+            <div id="newJobs"></div>
+          </div>
+          <div class="col">
+            <h3>Active</h3>
+            <div id="activeJobs"></div>
+          </div>
+          <div class="col">
+            <h3>Stock</h3>
+            <div id="stock"></div>
+            <div class="vgap"></div>
+            <button id="orderOil" class="btn">Order Oil x5</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- POS -->
+      <div id="pos" class="view" style="display:none">
+        <div class="appbar">
+          <button class="btn-lite back">←</button>
+          <h2>Cash Register</h2>
+          <div class="grow"></div>
+          <span id="posBiz"></span>
+        </div>
+        <div class="pos-grid">
+          <div class="pos-cats" id="posTabs"></div>
+          <div class="pos-items" id="posItems"></div>
+          <div class="pos-cart">
+            <div class="cart-head">Current Order <button id="cartClear" class="btn-lite">Clear</button></div>
+            <div id="cartList" class="cart-list"></div>
+            <div class="cart-sum">
+              <div>Subtotal: <span id="sub">$0.00</span></div>
+              <div>Tax (8.5%): <span id="tax">$0.00</span></div>
+              <div class="total">Total: <span id="tot">$0.00</span></div>
+            </div>
+            <div class="cart-actions">
+              <button id="cartHold" class="btn-lite">Hold Order</button>
+              <button id="cartReceipt" class="btn-lite">Print Receipt</button>
+              <button id="cartPay" class="btn">Process Payment</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MANAGEMENT -->
+      <div id="boss" class="view" style="display:none">
+        <div class="appbar">
+          <button class="btn-lite back">←</button>
+          <h2>Management</h2>
+        </div>
+        <div class="boss-tabs">
+          <button data-tab="general" class="tab active">General Info</button>
+          <button data-tab="employees" class="tab">Employees</button>
+          <button data-tab="pricing" class="tab">Menu</button>
+          <button data-tab="pos" class="tab">POS & Kiosks</button>
+          <button data-tab="finance" class="tab">Finance</button>
+        </div>
+
+        <div class="boss-content">
+          <div class="pane" id="pane-general">
+            <div class="form">
+              <label>Business Name <input id="bizName" type="text"></label>
+              <label>Primary Color <input id="colorPrimary" type="color" value="#0BA378"></label>
+              <label>Secondary Color <input id="colorSecondary" type="color" value="#0B2E44"></label>
+              <label>Logo URL <input id="logoUrl" type="text" placeholder="https://..."></label>
+              <label>Status
+                <select id="bizOpen">
+                  <option value="1">OPEN</option>
+                  <option value="0">CLOSED</option>
+                </select>
+              </label>
+              <button id="saveBiz" class="btn">Save Changes</button>
+            </div>
+            <div class="logo-prev"><img id="logoPrev"></div>
+          </div>
+
+          <div class="pane" id="pane-employees" style="display:none">
+            <div id="empList" class="cards"></div>
+          </div>
+
+          <div class="pane" id="pane-pricing" style="display:none">
+            <div id="priceEditor" class="cards"></div>
+          </div>
+
+          <div class="pane" id="pane-pos" style="display:none">
+            <div class="note">POS terminals coming soon. Use the tablet Cash Register for now.</div>
+          </div>
+
+          <div class="pane" id="pane-finance" style="display:none">
+            <div class="cards" id="financeBox">
+              <div class="card">
+                <h4>Current Balance</h4>
+                <div id="bal">$0.00</div>
+                <button class="btn-lite">Withdraw Funds</button>
+                <button class="btn">Deposit Funds</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CUSTOMER PAYMENT PROMPT -->
+      <div id="payPrompt" style="display:none">
+        <div class="sheet">
+          <h3 id="ppTitle"></h3>
+          <div id="ppItems" class="pp-items"></div>
+          <div class="pp-sum">
+            <div>Subtotal: <span id="ppSub">$0.00</span></div>
+            <div>Tax: <span id="ppTax">$0.00</span></div>
+            <div class="total">Total: <span id="ppTot">$0.00</span></div>
+          </div>
+          <div class="pp-method">
+            <button class="btn" data-pay="cash">Pay with Cash</button>
+            <button class="btn" data-pay="card">Pay with Card</button>
+          </div>
+          <div class="pp-actions">
+            <button class="btn-lite" id="ppDecline">Decline</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- CUSTOMER PICKER (seller side) -->
+      <div id="picker" style="display:none">
+        <div class="sheet">
+          <h3>Select Customer</h3>
+          <div id="pickList" class="pick-list"></div>
+          <div class="pp-actions">
+            <button class="btn-lite" id="pickCancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
