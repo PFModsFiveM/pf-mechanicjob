@@ -1,28 +1,31 @@
 fx_version 'cerulean'
 game 'gta5'
-lua54 'yes'
 
 name 'pf-mechanicjob'
 author 'pf'
+description 'Mechanic job with NPC jobs, POS, and management'
 version '1.0.1'
+
+lua54 'yes'
 
 ui_page 'html/index.html'
 
 files {
-    'html/index.html',
-    'html/app.js',
-    'html/style.css'
+  'html/index.html',
+  'html/app.js',
+  'html/style.css'
 }
 
 shared_scripts {
-    'config.lua'
+  '@qb-core/shared/locale.lua',
+  'config.lua'
 }
 
 client_scripts {
-    'client/main.lua'
+  'client/main.lua'
 }
 
 server_scripts {
-    '@oxmysql/lib/MySQL.lua',
-    'server/main.lua'
+  '@oxmysql/lib/MySQL.lua',
+  'server/main.lua'
 }
