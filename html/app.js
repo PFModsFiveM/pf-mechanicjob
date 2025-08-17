@@ -71,30 +71,28 @@
     const nodes = document.querySelectorAll("[data-exp]");
     const now = Date.now();
     nodes.forEach((n) => {
-      const t = Number(n.dataset.exp || 0);
-      const left = Math.max(0, Math.floor((t - now) / 1000));
-      const m = Math.floor(left / 60),
-        s = left % 60;
-      n.textContent = `${m}:${String(s).padStart(2, "0")}`;
+      const ms = Number(n.getAttribute("data-exp") || 0);
+      const left = Math.max(0, Math.floor((ms - now) / 1000));
+      const m = Math.floor(left / 60);
+      const s = left % 60;
+      n.textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
       if (left <= 0) n.closest(".card")?.remove();
     });
-    setTimeout(tickDeadlines, 250);
   }
+  setInterval(tickDeadlines, 1000);
 
-  // ----- jobs -----
   function renderJobs({ jobsNew = [], jobsActive = [], profile = {}, thresholds = [] } = {}) {
     state.dash.jobsNew = jobsNew;
     state.dash.jobsActive = jobsActive;
-    state.dash.profile = profile;
-    state.dash.thresholds = thresholds;
 
     $("newJobs").innerHTML = jobsNew
       .map(
         (j) => `<div class="card" data-job="${j.id}">
           <div class="row space">
             <div><b>${String(j.type || "").toUpperCase()}</b> • ${j.plate || ""}</div>
-            <div class="tag">Req. Rank ${j.min_rank || 1} • Deadline: ${fmtDeadline(j.deadline_at)}</div>
+            <div class="tag">Rank ${j.min_rank || 1}</div>
           </div>
+          <div class="muted">Deadline: ${fmtDeadline(j.deadline_at)}</div>
           <div class="row end">
             <button class="btn" data-act="accept" data-id="${j.id}" data-min="${j.min_rank || 1}">Accept</button>
           </div>
@@ -110,7 +108,7 @@
             <div class="tag">${j.status || ""}</div>
           </div>
           <div class="row end">
-            <button class="btn-secondary" data-act="start" data-id="${j.id}">Start</button>
+            <button class="btn-secondary" data-act="cancel" data-id="${j.id}">Cancel Job</button>
             <button class="btn" data-act="finish" data-id="${j.id}">Finish</button>
           </div>
         </div>`
@@ -147,7 +145,14 @@
       NUI("jobs:refresh");
       return;
     }
-    if (act === "start") return NUI("startJob", { id });
+    if (act === "cancel") {
+      await NUI("cancelJob", { id });
+      state.dash.jobsActive = state.dash.jobsActive.filter((j) => j.id !== id);
+      renderJobs(state.dash);
+      // Ask client to refresh from server so profile.xp/rank is correct
+      NUI("jobs:refresh");
+      return;
+    }
     if (act === "finish") {
       await NUI("finishJob", { id, quality: 80 });
       state.dash.jobsActive = state.dash.jobsActive.filter((j) => j.id !== id);
@@ -162,7 +167,7 @@
   function buildPOS(catalog) {
     const cats = Object.keys(catalog || {});
     const tabs = $("posTabs");
-    tabs.innerHTML = cats.map((c, i) => `<button class="dock-item seg ${i===0?'active':''}" data-cat="${c}">${c}</button>`).join("");
+    tabs.innerHTML = cats.map((c, i) => `<button class="dock-item ${i===0?'active':''}" data-cat="${c}">${c}</button>`).join("");
     tabs.querySelectorAll("button").forEach((b,i)=>b.addEventListener("click",()=>{
       tabs.querySelectorAll("button").forEach(x=>x.classList.remove("active"));
       b.classList.add("active"); drawItems(cats[i]);
@@ -184,8 +189,9 @@
     refreshCart();
   });
   function refreshCart(){
-    const list = $("cartList");
-    list.innerHTML = state.cart.items.map((it,i)=>`<div class="cart-line"><div>${it.label} x${it.qty}</div><div>$${(it.qty*it.price).toFixed(2)}</div></div>`).join("");
+    $("cartLines").innerHTML = state.cart.items.map(it=>`
+      <div class="cart-line"><div>${it.label} x${it.qty}</div><div>$${(it.qty*it.price).toFixed(2)}</div></div>
+    `).join("");
     const s = state.cart.items.reduce((a,b)=>a + b.price*b.qty,0);
     const t = +(s * 0.085).toFixed(2); const g = +(s + t).toFixed(2);
     state.cart.subtotal = s; state.cart.tax = t; state.cart.total = g;
@@ -246,8 +252,8 @@
     if (action === "toast") {
       // lightweight toast
       let box = document.getElementById("toastBox");
-      if (!box) { box = document.createElement("div"); box.id="toastBox"; box.style.position="absolute"; box.style.left="50%"; box.style.top="14px"; box.style.transform="translateX(-50%)"; document.body.appendChild(box); }
-      const d = document.createElement("div"); d.textContent = payload?.text || ""; d.style.padding="8px 12px"; d.style.margin="6px 0"; d.style.border="1px solid rgba(255,255,255,.1)"; d.style.borderRadius="10px"; d.style.background="rgba(16,22,28,.8)"; d.style.color="#e6edf3"; box.appendChild(d); setTimeout(()=>d.remove(), 2200);
+      if (!box) { box = document.createElement("div"); box.id="toastBox"; box.style.position="fixed"; box.style.left="50%"; box.style.bottom="60px"; box.style.transform="translateX(-50%)"; document.body.appendChild(box); }
+      const d = document.createElement("div"); d.textContent = payload?.text || ""; d.style.margin="6px 0"; d.style.padding="8px 12px"; d.style.background="#11171d"; d.style.border="1px solid rgba(255,255,255,.08)"; d.style.borderRadius="10px"; d.style.color="#e6edf3"; box.appendChild(d); setTimeout(()=>d.remove(), 2200);
     }
   });
 

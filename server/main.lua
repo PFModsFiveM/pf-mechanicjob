@@ -321,6 +321,52 @@ RegisterNetEvent('pf_mech:startJob', function(id)
   TriggerClientEvent('pf_mech:jobsUpdate', src)
 end)
 
+-- Cancel active job -> set status=cancelled, deduct XP, cleanup client vehicle/blip
+RegisterNetEvent('pf_mech:cancelJob', function(jobId)
+  local src = source
+  local P = QBCore.Functions.GetPlayer(src)
+  if not P then return end
+  local cid = P.PlayerData.citizenid
+  local id = tonumber(jobId)
+  if not id then return end
+
+  -- Only the assigned mechanic can cancel, and only if it's in an active state
+  local wo = MySQL.single.await([[
+      SELECT id, assigned_to, status
+      FROM pf_work_orders
+      WHERE id = ?
+  ]], { id })
+  if not wo then return end
+  if wo.assigned_to ~= cid then return end
+
+  -- Only cancel if the job is actually active
+  local st = tostring(wo.status or '')
+  if st ~= 'accepted' and st ~= 'in_progress' and st ~= 'awaiting_parts' then return end
+
+  -- Hard-cancel: clear assignee + any server-side vehicle linkage
+  MySQL.update.await([[
+      UPDATE pf_work_orders
+      SET status='cancelled',
+          assigned_to=NULL,
+          veh_netid=NULL,
+          updated_at=NOW()
+      WHERE id=? AND assigned_to=?
+        AND status IN ('accepted','in_progress','awaiting_parts')
+  ]], { id, cid })
+
+  -- Deduct XP
+  local penalty = (Config.JobCancel and tonumber(Config.JobCancel.xpPenalty)) or 25
+  local newxp = PF_AddXP(cid, -penalty)
+
+  -- Tell the client to remove vehicle/blip for this job id
+  TriggerClientEvent('pf_mech:client:jobCanceled', src, id)
+
+  -- Notify & refresh the jobs list so the card disappears immediately
+  TriggerClientEvent('QBCore:Notify', src, ('Job cancelled (-%d XP)'):format(penalty), 'primary')
+  TriggerClientEvent('pf_mech:jobsUpdate', src)
+  TriggerClientEvent('pf_mech:jobsUpdate', -1)
+end)
+
 local function payForJob(wo, quality)
   local q = quality or 80
   local base = (Config.JobTypes[wo.type] or { basePay = 600 }).basePay
@@ -440,3 +486,12 @@ QBCore.Commands.Add('mechclear', 'Clear your assigned mechanic jobs (dev)', {}, 
   TriggerClientEvent('pf_mech:jobsUpdate', src)
   TriggerClientEvent('QBCore:Notify', src, 'Cleared your active jobs', 'success')
 end, 'admin')
+
+-- PF ADD: XP helper (deducts or adds; clamps at 0)
+function PF_AddXP(cid, delta)
+  delta = tonumber(delta or 0) or 0
+  local cur = MySQL.scalar.await('SELECT xp FROM pf_mech_profiles WHERE citizenid=?', { cid }) or 0
+  local new = math.max(0, cur + delta)
+  MySQL.update.await('UPDATE pf_mech_profiles SET xp=? WHERE citizenid=?', { new, cid })
+  return new
+end
