@@ -203,13 +203,6 @@ RegisterNetEvent('pf_mech:jobsUpdate', function()
     nui('stock:update', { stock = d.stock or {} })
   end)
 end)
--- PF ADD: NUI asks for fresh dashboard
-RegisterNUICallback('jobs:refresh', function(_, cb)
-    QBCore.Functions.TriggerCallback('pf_mech:getDashboard', function(payload)
-        SendNUIMessage({ action = 'jobs:update', payload = payload })
-        if cb then cb(true) end
-    end)
-end)
 RegisterNetEvent('pf_mech:stockUpdate', function()
   if not UI_OPEN then return end
   QBCore.Functions.TriggerCallback('pf_mech:getDashboard', function(d)
@@ -460,52 +453,3 @@ RegisterNetEvent('pf_mech:applyPart', function(data)
 
   if data.toast then TriggerEvent('QBCore:Notify', data.toast, 'success') end
 end)
-
--- PF ADD: NUI cancel -> server
-RegisterNUICallback('cancelJob', function(data, cb)
-    local id = tonumber(data and data.id)
-    if id then
-        TriggerServerEvent('pf_mech:cancelJob', id)
-    end
-    if cb then cb(true) end
-end)
-
--- PF ADD: Cleanup the NPC vehicle/blip for a cancelled job
-RegisterNetEvent('pf_mech:client:jobCanceled', function(jobId)
-    local id = tonumber(jobId)
-    if not id then return end
-
-    -- If you track jobs in a local table, clear it here
-    if NPCJobs and NPCJobs[id] then
-        local info = NPCJobs[id]
-        if info.blip then RemoveBlip(info.blip) end
-        if info.veh and DoesEntityExist(info.veh) then
-            DeleteEntity(info.veh)
-        end
-        NPCJobs[id] = nil
-        return
-    end
-
-    -- Fallback: search nearby vehicles that have this jobId in state
-    local ped = PlayerPedId()
-    local myPos = GetEntityCoords(ped)
-    local handle, veh = FindFirstVehicle()
-    local success
-    repeat
-        if veh ~= 0 then
-            local pos = GetEntityCoords(veh)
-            if #(pos - myPos) < 200.0 then
-                local s = Entity(veh).state
-                if s and s.pf_jobId and tonumber(s.pf_jobId) == id then
-                    -- Try removing any blip you stored on entity state (if you do)
-                    if s.pf_blip and DoesBlipExist(s.pf_blip) then RemoveBlip(s.pf_blip) end
-                    if DoesEntityExist(veh) then DeleteEntity(veh) end
-                    break
-                end
-            end
-        end
-        success, veh = FindNextVehicle(handle)
-    until not success
-    EndFindVehicle(handle)
-end)
-

@@ -11,9 +11,12 @@ lua54 'yes'
 ui_page 'html/index.html'
 
 files {
-  'html/index.html',
-  'html/app.js',
-  'html/style.css'
+    'html/index.html',
+    'html/app.js',
+    'html/style.css',
+    'html/img/*.png',
+    'html/img/*.webp',
+    'html/img/*.svg'
 }
 
 shared_scripts {

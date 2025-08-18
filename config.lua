@@ -29,6 +29,20 @@ Config.NPCSpawns = {
   { coords = vector3(-372.9257, -111.5709, 38.6816), h = 69.1205 }
 }
 
+Config.BusinessName    = 'mechanic'         -- job / business key used in DB rows
+Config.ManagerGrade    = 4                  -- minimum grade to edit management
+Config.SalesTax        = 0.05               -- 5%
+
+-- Blip (will be recolored by primary_color when branding is saved)
+Config.Blip = {
+    enabled = true,
+    coords  = vec3(-335.87, -136.95, 39.01),  -- change to your shop
+    sprite  = 446,
+    scale   = 0.9,
+    color   = 2
+}
+
+
 -- POS catalog
 Config.POSCatalog = {
   Repairs = {

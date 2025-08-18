@@ -234,7 +234,7 @@ RegisterNetEvent('pf_mech:npc:toggle', function(enable)
     end
 
     local plate = ('NPC%03d'):format(math.random(0,999))
-    local model = (Config.NPCModels or {'sultan'})[math.random(#(Config.NPCModels or {'sultan'}))]
+    local model = (Config.NPCModels or {'sultan'})[math.random(#(Config.NPCModels or {'sultan'}))] or 'sultan'
     local sec = math.random(30,60)
     local minRank = minRankForParts(parts)
 
@@ -330,7 +330,6 @@ RegisterNetEvent('pf_mech:cancelJob', function(jobId)
   local id = tonumber(jobId)
   if not id then return end
 
-  -- Only the assigned mechanic can cancel, and only if it's in an active state
   local wo = MySQL.single.await([[
       SELECT id, assigned_to, status
       FROM pf_work_orders
@@ -339,32 +338,21 @@ RegisterNetEvent('pf_mech:cancelJob', function(jobId)
   if not wo then return end
   if wo.assigned_to ~= cid then return end
 
-  -- Only cancel if the job is actually active
   local st = tostring(wo.status or '')
   if st ~= 'accepted' and st ~= 'in_progress' and st ~= 'awaiting_parts' then return end
 
-  -- Hard-cancel: clear assignee + any server-side vehicle linkage
   MySQL.update.await([[
       UPDATE pf_work_orders
-      SET status='cancelled',
-          assigned_to=NULL,
-          veh_netid=NULL,
-          updated_at=NOW()
+      SET status='cancelled', updated_at=NOW()
       WHERE id=? AND assigned_to=?
-        AND status IN ('accepted','in_progress','awaiting_parts')
   ]], { id, cid })
 
-  -- Deduct XP
   local penalty = (Config.JobCancel and tonumber(Config.JobCancel.xpPenalty)) or 25
   local newxp = PF_AddXP(cid, -penalty)
 
-  -- Tell the client to remove vehicle/blip for this job id
   TriggerClientEvent('pf_mech:client:jobCanceled', src, id)
-
-  -- Notify & refresh the jobs list so the card disappears immediately
   TriggerClientEvent('QBCore:Notify', src, ('Job cancelled (-%d XP)'):format(penalty), 'primary')
   TriggerClientEvent('pf_mech:jobsUpdate', src)
-  TriggerClientEvent('pf_mech:jobsUpdate', -1)
 end)
 
 local function payForJob(wo, quality)
@@ -495,3 +483,105 @@ function PF_AddXP(cid, delta)
   MySQL.update.await('UPDATE pf_mech_profiles SET xp=? WHERE citizenid=?', { new, cid })
   return new
 end
+
+-- ======================================================================
+-- === mgmt helpers ======================================================
+-- ======================================================================
+local function IsManager(P)
+  if not P or not P.PlayerData or not P.PlayerData.job then return false end
+  local j = P.PlayerData.job
+  if j.name ~= JOB then return false end
+  if j.isboss then return true end -- qb-core sets this when grade has isboss=true
+  local mgr = tonumber(Config.ManagerGrade or 4)
+  local lvl = tonumber((j.grade and (j.grade.level or j.grade))) or 0
+  return lvl >= mgr
+end
+
+local function CollectHeadcount()
+  local on, total = 0, 0
+  for _, ply in pairs(QBCore.Functions.GetQBPlayers()) do
+    local j = ply.PlayerData.job
+    if j and j.name == JOB then
+      total = total + 1
+      if j.onduty then on = on + 1 end
+    end
+  end
+  return on, total
+end
+
+-- ======================================================================
+-- === management callbacks =============================================
+-- ======================================================================
+-- Boss permissions + headcount + mgmt payload
+QBCore.Functions.CreateCallback('pf_mech:mgmt:get', function(src, cb)
+    local P = QBCore.Functions.GetPlayer(src)
+    if not P then return cb(false) end
+
+    local jobName = Config.JobName or 'mechanic'
+    local soc     = Config.Society or 'mechanic'
+
+    local job = P.PlayerData.job or {}
+    local isMech = (job.name == jobName)
+
+    local gradeLevel = 0
+    if job.grade ~= nil then
+        -- qb-core has used both number and table in different versions
+        gradeLevel = type(job.grade) == 'table' and (job.grade.level or 0) or tonumber(job.grade) or 0
+    end
+    local managerGrade = Config.ManagerGrade or 4
+    local canEdit = isMech and (job.isboss == true or gradeLevel >= managerGrade)
+
+    -- branding
+    local branding = MySQL.single.await(
+        'SELECT name, primary_color, secondary_color, logo, open FROM pf_business WHERE business=?',
+        { soc }
+    ) or { name='Mechanic Shop', primary_color='#0BA378', secondary_color='#0B2E44', logo='', open=1 }
+
+    -- catalog (reuse your existing Config.POSCatalog)
+    local catalog = Config.POSCatalog or {}
+
+    -- employees + headcount (online only; onduty from job.onduty)
+    local employees, headOn, headTotal = {}, 0, 0
+    for _, ply in pairs(QBCore.Functions.GetQBPlayers()) do
+        local pj = ply.PlayerData.job or {}
+        if pj.name == jobName then
+            headTotal = headTotal + 1
+            if pj.onduty then headOn = headOn + 1 end
+
+            local ch = ply.PlayerData.charinfo or {}
+            local gl = 0
+            if pj.grade ~= nil then
+                gl = type(pj.grade) == 'table' and (pj.grade.level or 0) or tonumber(pj.grade) or 0
+            end
+            employees[#employees+1] = {
+                cid    = ply.PlayerData.citizenid,
+                name   = string.format('%s %s', ch.firstname or 'First', ch.lastname or 'Last'),
+                grade  = gl,
+                salary = 0,
+                avatar = '',
+                online = true
+            }
+        end
+    end
+
+    -- basic metrics (keep your existing if you have one)
+    local metrics = getBizOverview and getBizOverview() or {
+        todayTotal = 0, monthTotal = 0, todayOrders = 0, weeklyBars = {}
+    }
+
+    cb({
+        canEdit   = canEdit,
+        branding  = branding,
+        catalog   = catalog,
+        employees = employees,
+        npcOn     = NPCOn == true,
+        headcount = { on = headOn, total = headTotal },
+        metrics   = metrics
+    })
+end)
+
+
+-- employee earnings (simple placeholder so UI loads)
+QBCore.Functions.CreateCallback('pf_mech:earnings:get', function(src, cb)
+  cb({ today = 0, week = 0, month = 0, bars = {} })
+end)
