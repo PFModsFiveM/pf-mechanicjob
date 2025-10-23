@@ -152,6 +152,48 @@ RegisterNUICallback('startJob',  function(data, cb) TriggerServerEvent('pf_mech:
 RegisterNUICallback('finishJob', function(data, cb) TriggerServerEvent('pf_mech:finishJob', data.id, data.quality or 80); cb(true) end)
 RegisterNUICallback('orderParts',function(data, cb) TriggerServerEvent('pf_mech:orderParts', data.items or {}); cb(true) end)
 
+-- NPC Jobs 
+
+-- state
+local npcOn = false
+local onDuty = true  -- replace with your real on-duty flag if you have one
+
+-- Called by NUI fetch(".../toggleNPC")
+RegisterNUICallback('toggleNPC', function(data, cb)
+    local want = data and data.enabled == true
+
+    -- Optional: gate on duty
+    if want and not onDuty then
+        SendNUIMessage({ action = 'toast', payload = { text = 'You must be on duty to start Local Jobs.' } })
+        cb('ok'); return
+    end
+
+    npcOn = want
+    -- echo state back to UI immediately
+    SendNUIMessage({ action = 'pf_mech:npcState', payload = { on = npcOn } })
+
+    -- tell server
+    TriggerServerEvent('pf_mech:npc:toggle', npcOn)
+
+    cb('ok')
+end)
+
+-- ask server to (re)sync initial state when tablet opens
+RegisterNUICallback('jobs:refresh', function(_, cb)
+    TriggerServerEvent('pf_mech:npc:refresh')
+    cb('ok')
+end)
+
+-- Server pushes job lists back
+RegisterNetEvent('pf_mech:npc:updateJobs', function(payload)
+    SendNUIMessage({ action = 'jobs:update', payload = payload })
+end)
+
+-- Optional simple debug hotkey
+RegisterCommand('pf_npcdebug', function()
+    print('npcOn=', npcOn)
+end)
+
 -- POS
 RegisterNUICallback('pos:getNearby', function(_, cb)
   local ped = PlayerPedId()
@@ -452,4 +494,13 @@ RegisterNetEvent('pf_mech:applyPart', function(data)
   end
 
   if data.toast then TriggerEvent('QBCore:Notify', data.toast, 'success') end
+end)
+
+CreateThread(function()
+    while true do
+        local h = GetClockHours()
+        local m = GetClockMinutes()
+        SendNUIMessage({ action = 'clock', payload = { h = h, m = m } })
+        Wait(1000)
+    end
 end)

@@ -110,10 +110,26 @@ function renderNPC(){
   $('#listActive').innerHTML = (state.dash.jobsActive||[]).map(j=>`<div class="card">${jobCardActive(j)}</div>`).join('');
   $('#stockList').innerHTML  = (state.dash.stock||[]).map(s=>`<div class="line"><div>${s.part_id}</div><div>${s.qty}</div></div>`).join('');
 }
-$('#btnToggleNPC').onclick=()=>{
-  state.npcEnabled=!state.npcEnabled;
-  NUI('toggleNPC',{enabled:state.npcEnabled});
+$('#btnToggleNPC').onclick = () => {
+  state.npcEnabled = !state.npcEnabled;
+  state.mgmt.npcOn = state.npcEnabled;
+  render();
+
+  fetch(`https://${GetParentResourceName()}/toggleNPC`, {
+    method: 'POST',
+    body: JSON.stringify({ enabled: state.npcEnabled })
+  })
+  .then(r => r.text())
+  .then(t => { /* ok */ })
+  .catch(err => {
+    console.error('toggleNPC failed:', err);
+    // roll back UI if the post fails
+    state.npcEnabled = !state.npcEnabled;
+    state.mgmt.npcOn = state.npcEnabled;
+    render();
+  });
 };
+
 $('#listNew').addEventListener('click',e=>{
   const id=e.target?.getAttribute('data-accept'); if(id) NUI('acceptJob',{id:Number(id)});
 });

@@ -38,16 +38,33 @@ local function isBoss(Player)
 end
 
 local function ensureBusiness()
-    local bkey = (Config.DefaultBranding and Config.DefaultBranding.business) or (Config.Job or 'mechanic')
+    local bkey = (Config.DEFAULT_BRANDING and Config.DEFAULT_BRANDING.business) or (Config.Job or 'mechanic')
     local row = MySQL.single.await('SELECT business FROM pf_business WHERE business = ? LIMIT 1', { bkey })
     if not row then
-        local d = Config.DefaultBranding or {}
+        local d = Config.DEFAULT_BRANDING or {}
         MySQL.insert.await(
             'INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, open, tax) VALUES (?, ?, ?, ?, ?, ?, ?)',
             { bkey, d.name or 'Mechanic Shop', d.primary_color or '#0BA378', d.secondary_color or '#0B2E44', d.logo or '', d.open or 1, d.tax or 0.05 }
         )
     end
 end
+
+-- Call this once on resource start (or before first read of pf_business)
+local function ensureBusinessRow(business)
+    local row = MySQL.single.await('SELECT * FROM pf_business WHERE business = ?', { business })
+    if not row then
+        MySQL.insert.await(
+            'INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, tax, open) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            { business, DEFAULT_BRANDING.name, DEFAULT_BRANDING.primary_color, DEFAULT_BRANDING.secondary_color, DEFAULT_BRANDING.logo, DEFAULT_BRANDING.tax, DEFAULT_BRANDING.open }
+        )
+    end
+end
+
+AddEventHandler('onResourceStart', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    ensureBusinessRow('mechanic')
+end)
+
 
 -- Transform flat pf_pos_items to { [category] = { {id,label,price}, ... } }
 local function buildCatalog(rows)
@@ -69,12 +86,12 @@ AddEventHandler('onResourceStart', function(res)
     ensureBusiness()
 
     -- Seed POS items if empty
-    local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { Config.DefaultBranding.business or (Config.Job or 'mechanic') }) or 0
+    local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic') }) or 0
     if cnt == 0 and Config.CatalogSeed then
         for _, it in ipairs(Config.CatalogSeed) do
             MySQL.insert.await(
                 'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
-                { Config.DefaultBranding.business or (Config.Job or 'mechanic'), it.id, it.category, it.label, it.price }
+                { Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic'), it.id, it.category, it.label, it.price }
             )
         end
     end
@@ -89,7 +106,7 @@ RegisterNetEvent('pf_mech:mgmt:get', function()
     local Player = QBCore.Functions.GetPlayer(src)
     ensureBusiness()
 
-    local businessKey = Config.DefaultBranding.business or (Config.Job or 'mechanic')
+    local businessKey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
 
     -- Branding
     local brand = MySQL.single.await(
@@ -164,12 +181,12 @@ RegisterNetEvent('pf_mech:mgmt:get', function()
     TriggerClientEvent('pf_mech:mgmt:get:resp', src, {
         canEdit   = canEdit,
         branding  = {
-            name = brand.name or Config.DefaultBranding.name,
-            primary = brand.primary_color or Config.DefaultBranding.primary_color,
-            secondary = brand.secondary_color or Config.DefaultBranding.secondary_color,
+            name = brand.name or Config.DEFAULT_BRANDING.name,
+            primary = brand.primary_color or Config.DEFAULT_BRANDING.primary_color,
+            secondary = brand.secondary_color or Config.DEFAULT_BRANDING.secondary_color,
             logo = brand.logo or '',
             open = tonumber(brand.open or 1),
-            tax = tonumber(brand.tax or Config.DefaultBranding.tax or 0.05)
+            tax = tonumber(brand.tax or Config.DEFAULT_BRANDING.tax or 0.05)
         },
         catalog   = catalog,
         employees = employees,
@@ -184,6 +201,17 @@ RegisterNetEvent('pf_mech:mgmt:get', function()
     })
 end)
 
+
+-- ── Safe defaults (in case Config.DEFAULT_BRANDING is missing) ────────────────
+local DEFAULT_BRANDING = (Config and Config.DEFAULT_BRANDING) or {
+    name = 'Mechanic Shop',
+    primary_color   = '#0BA378',
+    secondary_color = '#0B2E44',
+    logo = '',
+    tax  = 5,   -- percent
+    open = 1
+}
+
 -- ============================================================================
 -- Management: Save Branding
 -- ============================================================================
@@ -197,14 +225,14 @@ RegisterNetEvent('pf_mech:mgmt:saveBranding', function(data)
     end
 
     ensureBusiness()
-    local bkey = Config.DefaultBranding.business or (Config.Job or 'mechanic')
+    local bkey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
 
-    local name  = (data and data.name) or Config.DefaultBranding.name
-    local prim  = (data and data.primary_color) or Config.DefaultBranding.primary_color
-    local sec   = (data and data.secondary_color) or Config.DefaultBranding.secondary_color
+    local name  = (data and data.name) or Config.DEFAULT_BRANDING.name
+    local prim  = (data and data.primary_color) or Config.DEFAULT_BRANDING.primary_color
+    local sec   = (data and data.secondary_color) or Config.DEFAULT_BRANDING.secondary_color
     local logo  = (data and data.logo) or ''
     local open  = (data and data.open) and 1 or 0
-    local tax   = tonumber(data and data.tax) or (Config.DefaultBranding.tax or 0.05)
+    local tax   = tonumber(data and data.tax) or (Config.DEFAULT_BRANDING.tax or 0.05)
 
     MySQL.execute.await(
         [[INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, open, tax)
@@ -237,7 +265,7 @@ RegisterNetEvent('pf_mech:mgmt:updatePrice', function(payload)
     if not itemId or itemId == '' then return end
 
     ensureBusiness()
-    local bkey = Config.DefaultBranding.business or (Config.Job or 'mechanic')
+    local bkey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
 
     -- Find existing row
     local row = MySQL.single.await(
@@ -276,7 +304,7 @@ RegisterNetEvent('pf_mech:mgmt:updateEmployee', function(p)
     end
     if not p or not p.cid then return end
 
-    local bkey = Config.DefaultBranding.business or (Config.Job or 'mechanic')
+    local bkey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
     local grade  = tonumber(p.grade) or 0
     local salary = tonumber(p.salary) or 0
     local avatar = p.avatar or ''
@@ -314,9 +342,9 @@ RegisterNetEvent('pos:requestCharge', function(data)
         subtotal = subtotal + ((tonumber(it.price) or 0) * (tonumber(it.qty) or 1))
     end
 
-    local bkey = Config.DefaultBranding.business or (Config.Job or 'mechanic')
+    local bkey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
     local brand = MySQL.single.await('SELECT tax FROM pf_business WHERE business = ? LIMIT 1', { bkey }) or {}
-    local taxRate = tonumber(brand.tax or Config.DefaultBranding.tax or 0.05)
+    local taxRate = tonumber(brand.tax or Config.DEFAULT_BRANDING.tax or 0.05)
     local tax = math.floor((subtotal * taxRate) + 0.5)
     local total = subtotal + tax
 
@@ -371,7 +399,7 @@ RegisterNetEvent('pos:customerPay', function(data)
     -- Record sale
     MySQL.insert.await(
         'INSERT INTO pf_sales (business, src, target, amount, tax, total, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())',
-        { inv.business or (Config.DefaultBranding.business or (Config.Job or 'mechanic')), inv.from or 0, inv.to or src, inv.subtotal or 0, inv.tax or 0, inv.total or 0 }
+        { inv.business or (Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')), inv.from or 0, inv.to or src, inv.subtotal or 0, inv.tax or 0, inv.total or 0 }
     )
 
     TriggerClientEvent('pf_mech:toast', src,    { text = 'Paid ' .. tostring(inv.total) })
@@ -428,18 +456,50 @@ RegisterNetEvent('pf_mech:earnings:get', function()
     })
 end)
 
--- ============================================================================
--- Small utilities for client
--- ============================================================================
+local function serverClock()
+    local h = tonumber(os.date('%H'))
+    local m = tonumber(os.date('%M'))
+    return h, m
+end
 
--- Send in-game time every 1s to client who has tablet open (client asks for it)
-CreateThread(function()
-    while true do
-        Wait(1000)
-        for _, src in ipairs(GetPlayers()) do
-            local h = GetClockHours()
-            local m = GetClockMinutes()
-            TriggerClientEvent('clock', tonumber(src), { h = h, m = m })
-        end
+local npcEnabled = {}  -- [src] = true/false
+
+RegisterNetEvent('pf_mech:npc:toggle', function(on)
+    local src = source
+    npcEnabled[src] = on and true or false
+    print(('[pf-mech] %d npcEnabled=%s'):format(src, tostring(npcEnabled[src])))
+
+    if npcEnabled[src] then
+        -- kick a tick for this player
+        startNpcFeedFor(src)
+    else
+        stopNpcFeedFor(src)
     end
+
+    -- (optional) echo state to their UI
+    TriggerClientEvent('pf_mech:npc:updateJobs', src, {
+        jobsNew = {}, jobsActive = {}, profile = { xp = 0, rank = 1 }, thresholds = { 0, 200, 450, 800 }
+    })
 end)
+
+RegisterNetEvent('pf_mech:npc:refresh', function()
+    local src = source
+    -- send current jobs/state
+    TriggerClientEvent('pf_mech:npc:updateJobs', src, {
+        jobsNew = {}, jobsActive = {}, profile = { xp = 0, rank = 1 }, thresholds = { 0, 200, 450, 800 }
+    })
+end)
+
+-- Stubbed helpers (replace with your real job logic)
+function startNpcFeedFor(src)
+    -- TODO: create/assign jobs and push with pf_mech:npc:updateJobs
+end
+function stopNpcFeedFor(src)
+    -- TODO: clear timers / pending jobs
+end
+
+AddEventHandler('playerDropped', function(_, src)
+    npcEnabled[src] = nil
+    stopNpcFeedFor(src)
+end)
+
