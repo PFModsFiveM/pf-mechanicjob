@@ -3,13 +3,69 @@ local QBCore = exports['qb-core']:GetCoreObject()
 local JOB = Config.JobName or 'mechanic'
 
 local UI_OPEN = false
-local jobBlips, spawnedNPCVeh = {}, {}
+local jobBlips, spawnedNPCVeh = {}
+
+-- Tablet animation variables
+local tabletDict = "amb@code_human_in_bus_passenger_idles@female@tablet@idle_a"
+local tabletAnim = "idle_a"
+local tabletProp = `prop_cs_tablet`
+local tabletBone = 60309
+local tabletObj = nil
+
+-- Register useable item
+RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
+    QBCore.Functions.TriggerCallback('QBCore:Server:GetObject', function(obj)
+        QBCore = obj
+        QBCore.Functions.GetPlayerData(function(PlayerData)
+            PlayerJob = PlayerData.job
+        end)
+    end)
+end)
+
+-- Register tablet usage event
+RegisterNetEvent('pf-mechanicjob:client:useMechTablet', function()
+    local PlayerData = QBCore.Functions.GetPlayerData()
+    if PlayerData.job.name == JOB then
+        TriggerEvent('pf_mech:openTablet')
+    else
+        QBCore.Functions.Notify('You are not a mechanic!', 'error')
+    end
+end)
 
 -- ================== NUI helpers ==================
 local function nui(a, p) SendNUIMessage({ action=a, payload=p }) end
 local function setFocus(b) SetNuiFocus(b, b); SetNuiFocusKeepInput(false) end
-local function openTablet(payload) UI_OPEN=true; setFocus(true); nui('open', payload or {}) end
-local function closeTablet() UI_OPEN=false; setFocus(false); nui('close') end
+local function openTablet(payload)
+    RequestAnimDict(tabletDict)
+    while not HasAnimDictLoaded(tabletDict) do Wait(100) end
+    
+    RequestModel(tabletProp)
+    while not HasModelLoaded(tabletProp) do Wait(100) end
+
+    local ped = PlayerPedId()
+    tabletObj = CreateObject(tabletProp, 0.0, 0.0, 0.0, true, true, false)
+    local bone = GetPedBoneIndex(ped, tabletBone)
+    
+    AttachEntityToEntity(tabletObj, ped, bone, 0.03, 0.002, -0.0, 10.0, 160.0, 0.0, true, true, false, true, 1, true)
+    TaskPlayAnim(ped, tabletDict, tabletAnim, 8.0, -8.0, -1, 50, 0, false, false, false)
+    
+    UI_OPEN = true
+    setFocus(true)
+    nui('open', payload or {})
+end
+local function closeTablet()
+    UI_OPEN = false
+    setFocus(false)
+    nui('close')
+    
+    local ped = PlayerPedId()
+    ClearPedTasks(ped)
+    
+    if tabletObj then
+        DeleteEntity(tabletObj)
+        tabletObj = nil
+    end
+end
 
 -- ================== small helpers ==================
 local function nearbyVeh(radius)
@@ -305,6 +361,46 @@ local function vehModelName(veh)
   return key or ('0x'..string.format('%X', hash))
 end
 
+-- Forward-declare helpers (move here so diagnostics handler can call them)
+local function partsNeededForRepair(partKey, healthPercent)
+    local rule = (Config.PartRules or {})[partKey] or {}
+    local maxItems = tonumber(rule.max_items) or 0
+
+    -- sensible defaults for known types if not declared in config
+    if maxItems <= 0 then
+        if partKey:match('engine') or rule.type == 'engine' then maxItems = 5 end
+        if partKey == 'body_part' or rule.type == 'body' then maxItems = 5 end
+        if partKey == 'sparkplugs' or rule.type == 'sparkplugs' then maxItems = 8 end
+        if rule.type == 'battery' then maxItems = 1 end
+        if rule.type == 'axle' then maxItems = 4 end
+        if partKey == 'tire_new' then maxItems = 4 end
+        if rule.type == 'oil' then maxItems = 1 end
+    end
+
+    -- clamp healthPercent
+    healthPercent = math.max(0, math.min(100, tonumber(healthPercent) or 0))
+
+    -- parts needed = ceil( missingPercent * maxItems )
+    if maxItems <= 0 then return 0 end
+    local missingPercent = 100 - healthPercent
+    local needed = math.ceil((missingPercent / 100) * maxItems)
+    if needed < 0 then needed = 0 end
+    if needed > maxItems then needed = maxItems end
+    return needed
+end
+
+local DiagnosticLabels = {
+    sparkplugs = "Spark Plugs",
+    carbattery = "Car Battery",
+    engine_oil = "Engine Oil",
+    oil_filter = "Oil Filter",
+    susp_arm = "Suspension Arm",
+    axleparts = "Axle Parts",
+    engine_part = "Engine Part",
+    body_part = "Body Panel",
+    tire_new = "Tire"
+}
+
 RegisterCommand('scanveh', function()
   local veh = nearbyVeh(6.0); if veh == 0 then return TriggerEvent('QBCore:Notify','No vehicle nearby','error') end
   if isNPCVeh(veh) then
@@ -316,11 +412,11 @@ RegisterCommand('scanveh', function()
         local done = tonumber((job.installed_parts or {})[p.id] or 0)
         local need = math.max(0, (tonumber(p.qty) or 1) - done)
         local tag = need <= 0 and '✓' or ('x'..need)
-        rows[#rows+1] = { header = (p.id:gsub('_',' '):gsub('%f[%w].', string.upper)), txt = ('Need: %s  •  Installed: %d'):format(tag, done) }
+        rows[#rows+1] = { header = (p.id:gsub('_',' '):gsub('%f[%w].', string.upper)), txt = ('Need: %s  •  Installed: %d'):format(tag, done), params = {} }
       end
-      if job.paint_req then rows[#rows+1] = { header = 'Paint', txt = ('Color: %s'):format(job.paint_req) } end
+      if job.paint_req then rows[#rows+1] = { header = 'Paint', txt = ('Color: %s'):format(job.paint_req), params = {} } end
       rows[#rows+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
-      table.insert(rows, 1, { header = ('NPC Job • %s'):format(job.plate or 'Unknown'), isMenuHeader=true })
+      table.insert(rows, 1, { header = ('NPC Job • %s'):format(job.plate or 'Unknown'), isMenuHeader=true, params = {} })
       exports['qb-menu']:openMenu(rows)
     end, id)
   else
@@ -329,9 +425,9 @@ RegisterCommand('scanveh', function()
     local eng = math.max(0, math.min(100, math.floor(GetVehicleEngineHealth(veh)/10)))
     local body= math.max(0, math.min(100, math.floor(GetVehicleBodyHealth(veh)/10)))
     local menu = {
-      { header = name, txt = ('Plate: %s'):format(plate or 'N/A'), isMenuHeader = true },
-      { header = ('Engine - %d%%'):format(eng), txt = 'Health' },
-      { header = ('Body - %d%%'):format(body), txt = 'Health' },
+      { header = name, txt = ('Plate: %s'):format(plate or 'N/A'), isMenuHeader = true, params = {} },
+      { header = ('Engine - %d%%'):format(eng), txt = 'Health', params = {} },
+      { header = ('Body - %d%%'):format(body), txt = 'Health', params = {} },
       { header = 'Close', params = { event='qb-menu:client:closeMenu' } }
     }
     exports['qb-menu']:openMenu(menu)
@@ -437,63 +533,318 @@ RegisterNetEvent('pf_mech:confirmModApply', function(args)
 end)
 
 -- main part entry
+local installTimes = {
+    -- Performance parts
+    engine1 = 12000,
+    engine2 = 15000,
+    engine3 = 18000,
+    engine4 = 20000,
+    engine5 = 25000,
+    brakes1 = 8000,
+    brakes2 = 10000,
+    brakes3 = 12000,
+    transmission1 = 10000,
+    transmission2 = 12000,
+    transmission3 = 15000,
+    suspension1 = 8000,
+    suspension2 = 10000,
+    suspension3 = 12000,
+    suspension4 = 15000,
+    turbo = 20000,
+    -- Basic repairs
+    repair_kit = 5000,
+    tire_repair = 3000,
+    body_part = 8000,
+}
+
 RegisterNetEvent('pf_mech:tryUsePart', function(itemName)
-  if itemName == 'oilfilter' then itemName = 'oil_filter' end
-  local rule = (Config.PartRules or {})[itemName]
-  if not rule then return TriggerEvent('QBCore:Notify','Invalid part', 'error') end
+    if itemName == 'oilfilter' then itemName = 'oil_filter' end
+    local rule = (Config.PartRules or {})[itemName]
+    if not rule then return TriggerEvent('QBCore:Notify', 'Invalid part', 'error') end
 
-  local veh = nearbyVeh(6.0); if veh == 0 then return TriggerEvent('QBCore:Notify','No vehicle nearby','error') end
+    local veh = nearbyVeh(6.0)
+    if veh == 0 then return TriggerEvent('QBCore:Notify', 'No vehicle nearby', 'error') end
 
-  if rule.action == 'setMod' then
-    if not zoneOK(rule, veh) then return TriggerEvent('QBCore:Notify','Move closer to the exterior of the vehicle', 'error') end
-    return openModPicker(itemName, veh)
-  end
+    -- Get installation time based on part complexity
+    local installTime = installTimes[itemName] or 5000
 
-  if not zoneOK(rule, veh) then
-    local hint = ({front='at the FRONT of the car', wheel='near a WHEEL', exterior='near the EXTERIOR', under='near the UNDERCARRIAGE'})[rule.zone] or 'at the correct spot'
-    return TriggerEvent('QBCore:Notify','Move to the correct spot: '..hint, 'error')
-  end
+    if not DoProgress('Installing '..itemName:gsub('_', ' ')..'...', installTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then 
+        return TriggerEvent('QBCore:Notify', 'Installation cancelled', 'error')
+    end
 
-  local jobId = nil
-  if rule.npcOnly then
-    if not isNPCVeh(veh) then return TriggerEvent('QBCore:Notify','This part is for work orders only', 'error') end
-    jobId = Entity(veh).state.pf_jobId
-  end
-
-  -- progress FIRST, then tell server
-  if not DoProgress('Working...', timeForAction(rule.action), 'amb@world_human_vehicle_mechanic@male@base', 'base') then return end
-
-  local px,py,pz = table.unpack(GetEntityCoords(PlayerPedId()))
-  TriggerServerEvent('pf_mech:usePart', itemName, NetworkGetNetworkIdFromEntity(veh), jobId, px, py, pz, nil)
+    local px, py, pz = table.unpack(GetEntityCoords(PlayerPedId()))
+    TriggerServerEvent('pf_mech:usePart', itemName, NetworkGetNetworkIdFromEntity(veh), nil, px, py, pz, nil)
 end)
 
 -- apply the effect; progress already completed
 RegisterNetEvent('pf_mech:applyPart', function(data)
-  local veh = NetworkGetEntityFromNetworkId(data.net or 0)
-  if veh == 0 or not DoesEntityExist(veh) then return end
+    local veh = NetworkGetEntityFromNetworkId(data.net or 0)
+    if veh == 0 or not DoesEntityExist(veh) then return end
 
-  if data.action == 'setMod' then
-    SetVehicleModKit(veh, 0)
-    SetVehicleMod(veh, tonumber(data.modType or 0), tonumber(data.modIndex or 0), false)
-  elseif data.action == 'tire' then
-    for i=0,5 do
-      if IsVehicleTyreBurst(veh, i, false) then SetVehicleTyreFixed(veh, i) break end
-    end
-  elseif data.action == 'paint' then
-    local p = (Config.PaintPalette or {})[tostring(data.color or '')]
-    if p then
-      SetVehicleCustomPrimaryColour(veh, p.r, p.g, p.b)
-      SetVehicleCustomSecondaryColour(veh, p.r, p.g, p.b)
-    end
-  elseif data.action == 'brake' or data.action == 'susp' then
-    SetVehicleEngineHealth(veh, math.max(GetVehicleEngineHealth(veh), 900.0))
-  elseif data.action == 'oil' or data.action == 'engine' then
-    SetVehicleEngineHealth(veh, 1000.0)
-  elseif data.action == 'body' then
-    SetVehicleFixed(veh); SetVehicleDirtLevel(veh, 0.0)
-  end
+    local qty = tonumber(data.qty) or 1
+    local state = Entity(veh).state
+    local partDamage = state.partDamage or {}
 
-  if data.toast then TriggerEvent('QBCore:Notify', data.toast, 'success') end
+    if data.action == 'repair' then
+        if data.type == 'body' then
+            -- Fix: each part repairs exactly 20% (200.0 points) of body damage
+            -- Note: SetVehicleBodyHealth expects 0.0-1000.0
+            local curHealth = GetVehicleBodyHealth(veh)
+            local newHealth = curHealth + (200.0 * qty)
+            SetVehicleBodyHealth(veh, math.min(1000.0, newHealth))
+            
+            -- Force vehicle to re-sync its damage state
+            local cur = GetVehicleBodyHealth(veh)
+            SetVehicleBodyHealth(veh, cur - 1.0)
+            Wait(0)
+            SetVehicleBodyHealth(veh, cur)
+            
+            -- Update damage tracking
+            partDamage.body = math.max(0, (partDamage.body or 0) - (20 * qty))
+        elseif data.type == 'engine' then
+            -- each engine part restores ~150 engine-health (scale as needed)
+            local newHealth = GetVehicleEngineHealth(veh) + (150 * qty)
+            SetVehicleEngineHealth(veh, math.min(1000.0, newHealth))
+            partDamage.engine = math.max(0, (partDamage.engine or 0) - (15 * qty))
+        elseif data.type == 'battery' then
+            -- battery is single-item; if qty>0 clear damage
+            state:set('batteryDamage', 0, true)
+            SetVehicleEngineOn(veh, true, false, false)
+            partDamage.carbattery = 0
+        elseif data.type == 'sparkplugs' then
+            -- each sparkplug item gives a moderate engine boost
+            SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + (50 * qty)))
+            partDamage.sparkplugs = math.max(0, (partDamage.sparkplugs or 0) - (20 * qty))
+        elseif data.type == 'oil' or data.type == 'engine_oil' then
+            -- oil restores engine health significantly
+            SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + (150 * qty)))
+            partDamage.oil = math.max(0, (partDamage.oil or 0) - (100 * qty))
+        elseif data.type == 'suspension' or data.type == 'axle' then
+            -- improve handling proportionally
+            local cur = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fTractionCurveMax') or 1.0
+            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fTractionCurveMax', cur + (0.05 * qty))
+            partDamage.axle = math.max(0, (partDamage.axle or 0) - (25 * qty))
+            partDamage.suspension = math.max(0, (partDamage.suspension or 0) - (25 * qty))
+        elseif data.type == 'body' then
+            -- BODY: each body_part should restore 20% (200 on 0-1000 scale)
+            local newBody = GetVehicleBodyHealth(veh) + (200 * qty)
+            SetVehicleBodyHealth(veh, math.min(1000.0, newBody))
+            -- reduce stored damage percent by 20% per item
+            partDamage.body = math.max(0, (partDamage.body or 0) - (20 * qty))
+        end
+
+    elseif data.action == 'tire' then
+        -- fix up to qty burst tyres
+        local fixed = 0
+        for i=0,5 do
+            if fixed >= qty then break end
+            if IsVehicleTyreBurst(veh, i, false) then
+                SetVehicleTyreFixed(veh, i)
+                partDamage.tires = partDamage.tires or {}
+                local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[i] or tostring(i)
+                partDamage.tires[key] = 0
+                fixed = fixed + 1
+            end
+        end
+    elseif data.action == 'upgrade' then
+        SetVehicleModKit(veh, 0)
+        if data.type == 'brakes' and data.level then
+            SetVehicleMod(veh, 12, data.level - 1, false)
+        end
+        -- ...existing upgrade handlers...
+    end
+
+    -- persist any updates to partDamage back to entity state
+    state:set('partDamage', partDamage, true)
+
+    if data.toast then
+        TriggerEvent('QBCore:Notify', data.toast, 'success')
+    end
+end)
+
+-- Mechanics job tablet
+RegisterNetEvent('pf-mechanicjob:client:useMechanicTools', function()
+    local vehicle = nearbyVeh(3.0)
+    if vehicle == 0 then
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return
+    end
+
+    -- Fix: properly calculate health percentages from 0-1000 scale
+    local engineHealthPct = math.floor((GetVehicleEngineHealth(vehicle) / 10.0)) -- already 0-100
+    local bodyHealthPct   = math.floor((GetVehicleBodyHealth(vehicle) / 10.0))   -- already 0-100
+    local tankHealthPct   = math.floor((GetVehiclePetrolTankHealth(vehicle) / 10.0))
+
+    -- Force re-sync current body health
+    local curBody = GetVehicleBodyHealth(vehicle)
+    SetVehicleBodyHealth(vehicle, curBody - 1.0)
+    Wait(0)
+    SetVehicleBodyHealth(vehicle, curBody)
+
+    -- overall percents
+    local state = Entity(vehicle).state
+    local partDamage = state.partDamage or {}
+
+    -- compute per-part health% (health = 100 - damage)
+    local health = {}
+    health.sparkplugs = 100 - (tonumber(partDamage.sparkplugs) or 0)
+    health.carbattery = 100 - (tonumber(partDamage.carbattery) or 0)
+    health.engine_oil = 100 - (tonumber(partDamage.oil) or 0)
+    health.oil_filter = 100 - (tonumber(partDamage.oil_filter) or 0)
+    health.susp_arm = 100 - (tonumber(partDamage.suspension) or 0)
+    health.axleparts = 100 - (tonumber(partDamage.axle) or 0)
+    health.engine_overall = engineHealthPct
+    health.body_overall = bodyHealthPct
+
+    local menu = {
+        { header = "Vehicle Diagnostics", txt = GetVehicleNumberPlateText(vehicle), isMenuHeader = true, params = {} },
+        { header = "Overall Condition", txt = string.format("Engine %d%% • Body %d%% • Tank %d%%", engineHealthPct, bodyHealthPct, tankHealthPct), params = {} }
+    }
+
+    -- helper to append a part entry with computed needed count
+    local function addPartEntry(ruleKey, label, hp)
+        local needed = partsNeededForRepair(ruleKey, hp)
+        local txt = ("Health: %d%%  •  Needs: %d"):format(hp, needed)
+        menu[#menu+1] = {
+            header = string.format("%s — %d%%", label, hp),
+            txt = txt,
+            params = { event = 'pf-mechanicjob:client:openRepairSuggest', args = { vehicle = vehicle, part = ruleKey, needed = needed } }
+        }
+    end
+
+    -- Engine & Body
+    addPartEntry('engine_part', 'Engine (overall)', health.engine_overall)
+    addPartEntry('body_part',   'Body (overall)',   health.body_overall)
+
+    -- Individual engine components
+    addPartEntry('sparkplugs',  DiagnosticLabels.sparkplugs or 'Spark Plugs', health.sparkplugs)
+    addPartEntry('carbattery',  DiagnosticLabels.carbattery or 'Car Battery', health.carbattery)
+    addPartEntry('engine_oil',  DiagnosticLabels.engine_oil or 'Engine Oil', health.engine_oil)
+    addPartEntry('oil_filter',  DiagnosticLabels.oil_filter or 'Oil Filter', health.oil_filter)
+
+    -- Suspension / Axle
+    addPartEntry('susp_arm',    DiagnosticLabels.susp_arm or 'Suspension Arm', health.susp_arm)
+    addPartEntry('axleparts',   DiagnosticLabels.axleparts or 'Axle Parts', health.axleparts)
+
+    -- Tires: detect actual burst tyres and create per-wheel entries
+    do
+        local burstCount = 0
+        local anyBurst = false
+        -- tyre indices 0..5
+        local wheelNames = { [0]='Front Left', [1]='Front Right', [2]='Rear Left', [3]='Rear Right', [4]='Middle Left', [5]='Middle Right' }
+        for i=0,5 do
+            if IsVehicleTyreBurst(vehicle, i, false) then
+                anyBurst = true
+                burstCount = burstCount + 1
+                local label = wheelNames[i] or ('Wheel '..tostring(i))
+                local healthPct = 0
+                menu[#menu+1] = {
+                    header = string.format("Tire %s — %d%%", label, healthPct),
+                    txt = string.format("Health: %d%%  •  Needs: %d", healthPct, 1),
+                    params = { event = 'pf-mechanicjob:client:openRepairSuggest', args = { vehicle = vehicle, part = 'tire_new', needed = 1, wheel = i } }
+                }
+            end
+        end
+
+        if not anyBurst then
+            -- no bursts found — check state.partDamage fallback if available
+            local tiresState = partDamage.tires
+            if type(tiresState) == 'table' then
+                -- list any damaged tyres from state (keys like lf/rf/lr/rr)
+                for k,v in pairs(tiresState) do
+                    local dmg = tonumber(v) or 0
+                    if dmg > 0 then
+                        local healthPct = math.max(0, 100 - dmg)
+                        local label = (k:upper()) -- show key
+                        menu[#menu+1] = {
+                            header = string.format("Tire %s — %d%%", label, healthPct),
+                            txt = string.format("Health: %d%%  •  Needs: %d", healthPct, 1),
+                            params = { event = 'pf-mechanicjob:client:openRepairSuggest', args = { vehicle = vehicle, part = 'tire_new', needed = 1, wheel = k } }
+                        }
+                        burstCount = burstCount + 1
+                    end
+                end
+            end
+
+            if burstCount == 0 then
+                -- healthy tyres
+                menu[#menu+1] = {
+                    header = "Tires — OK",
+                    txt = "No tyres need replacement",
+                    params = {}
+                }
+            end
+        end
+    end
+
+    menu[#menu+1] = { header = "Close", params = { event = "qb-menu:client:closeMenu" } }
+
+    exports['qb-menu']:openMenu(menu)
+end)
+
+-- REPLACE old pf-mechanicjob:client:openRepairSuggest handler with this updated version
+RegisterNetEvent('pf-mechanicjob:client:openRepairSuggest', function(data)
+    local vehicle = data.vehicle
+    local part = data.part
+    local needed = tonumber(data.needed) or 1
+    local wheel = data.wheel -- optional
+
+    if not DoesEntityExist(vehicle) then return end
+
+    local label = DiagnosticLabels[part] or part
+
+    -- helper to pick a sensible progress action
+    local function progForPart(p)
+        if p:find('tire') then return 'tire' end
+        if p:find('oil') then return 'oil' end
+        if p:find('spark') then return 'engine' end
+        if p:find('engine') then return 'engine' end
+        if p:find('carbattery') or p:find('battery') then return 'engine' end
+        if p:find('susp') then return 'susp' end
+        if p:find('axle') then return 'susp' end
+        return 'engine'
+    end
+
+    local progressAction = progForPart(part)
+    local progTime = timeForAction(progressAction) or 4000
+
+    local menu = {
+        { header = label, isMenuHeader = true, params = {} },
+        { header = ("Repair using items (%d)"):format(needed), txt = "Consumes required item(s) from your inventory.", params = {
+            event = "pf-mechanicjob:client:doRepairWithItems",
+            args = { vehicle = vehicle, part = part, needed = needed, wheel = wheel, progTime = progTime }
+        }},
+        { header = "Close", params = { event = "qb-menu:client:closeMenu" } }
+    }
+    exports['qb-menu']:openMenu(menu)
+end)
+
+-- New handler: perform progress then call server to consume items & apply repair
+RegisterNetEvent('pf-mechanicjob:client:doRepairWithItems', function(data)
+    local vehicle = data.vehicle
+    local part = data.part
+    local needed = tonumber(data.needed) or 1
+    local wheel = data.wheel
+    local progTime = tonumber(data.progTime) or timeForAction('engine')
+
+    if not DoesEntityExist(vehicle) then
+        QBCore.Functions.Notify('Vehicle not found', 'error'); return
+    end
+
+    -- run progress; if cancelled, abort
+    if not DoProgress('Repairing '..(part:gsub('_',' '))..'...', progTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+        QBCore.Functions.Notify('Repair cancelled', 'error'); return
+    end
+
+    -- ask server to remove items and perform repair
+    QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
+        if success then
+            QBCore.Functions.Notify(msg or 'Repair successful', 'success')
+            -- server will trigger pf_mech:applyPart to update the vehicle; nothing else required here
+        else
+            QBCore.Functions.Notify(msg or 'Missing required parts or failed', 'error')
+        end
+    end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, wheel)
 end)
 
 CreateThread(function()

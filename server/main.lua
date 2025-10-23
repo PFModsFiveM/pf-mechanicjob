@@ -503,3 +503,127 @@ AddEventHandler('playerDropped', function(_, src)
     stopNpcFeedFor(src)
 end)
 
+QBCore.Functions.CreateUseableItem("mech_tablet", function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if Player.PlayerData.job.name == 'mechanic' then
+        TriggerClientEvent('pf-mechanicjob:client:useMechTablet', source)
+    else
+        TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
+    end
+end)
+
+-- Register mechanic tools item
+QBCore.Functions.CreateUseableItem("mechanic_tools", function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if Player.PlayerData.job.name == "mechanic" then
+        TriggerClientEvent('pf-mechanicjob:client:useMechanicTools', source)
+    else
+        TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
+    end
+end)
+
+-- Register performance parts
+local performanceParts = {
+    "engine1", "engine2", "engine3", "engine4", "engine5",
+    "brakes1", "brakes2", "brakes3",
+    "transmission1", "transmission2", "transmission3",
+    "suspension1", "suspension2", "suspension3", "suspension4",
+    "armor1", "armor2", "armor3", "armor4", "armor5",
+    "turbo"
+}
+
+for _, item in ipairs(performanceParts) do
+    QBCore.Functions.CreateUseableItem(item, function(source)
+        local Player = QBCore.Functions.GetPlayer(source)
+        if Player.PlayerData.job.name == "mechanic" then
+            -- This will trigger the client-side event to handle the part installation
+            TriggerClientEvent('pf_mech:tryUsePart', source, item)
+        else
+            TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
+        end
+    end)
+end
+
+RegisterNetEvent('pf_mech:usePart', function(itemName, vehNetId, jobId, px, py, pz, extra)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    -- Check if player has the item
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item then 
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required part', 'error')
+        return 
+    end
+
+    -- Remove item after successful installation
+    if Player.Functions.RemoveItem(itemName, 1) then
+        -- Apply the part effect
+        TriggerClientEvent('pf_mech:applyPart', -1, {
+            net = vehNetId,
+            action = Config.PartRules[itemName].action,
+            toast = 'Successfully installed ' .. itemName:gsub('_', ' ')
+        })
+
+        -- Add experience/job data here if needed
+    else
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to install part', 'error')
+    end
+end)
+
+-- map partKey -> item name used in inventory
+local PartToItem = {
+  engine_part = 'engine_part',
+  body_part   = 'body_part',
+  sparkplugs  = 'sparkplugs',
+  carbattery  = 'carbattery',
+  engine_oil  = 'engine_oil',
+  oil_filter  = 'oil_filter',
+  susp_arm    = 'susp_arm',
+  axleparts   = 'axleparts',
+  tire_new    = 'tire_new',
+}
+
+-- map partKey -> data used when applying repair to clients
+local PartApplyInfo = {
+  engine_part = { action = 'repair', type = 'engine' },
+  body_part   = { action = 'repair', type = 'body' },
+  sparkplugs  = { action = 'repair', type = 'sparkplugs' },
+  carbattery  = { action = 'repair', type = 'battery' },
+  engine_oil  = { action = 'repair', type = 'oil' },
+  oil_filter  = { action = 'repair', type = 'oil' },
+  susp_arm    = { action = 'repair', type = 'suspension' },
+  axleparts   = { action = 'repair', type = 'axle' },
+  tire_new    = { action = 'tire',   type = 'tire' },
+}
+
+-- callback used by client to attempt a repair (consumes items and broadcasts apply)
+QBCore.Functions.CreateCallback('pf_mech:server:attemptRepair', function(source, cb, vehNetId, partKey, needed, wheel)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then cb(false, 'Player not found'); return end
+
+    local itemName = PartToItem[partKey] or partKey
+    local count = tonumber(needed) or 1
+
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item or (item.amount or 0) < count then
+        cb(false, 'You do not have enough items')
+        return
+    end
+
+    local removed = Player.Functions.RemoveItem(itemName, count)
+    if not removed then
+        cb(false, 'Failed to remove items')
+        return
+    end
+
+    local info = PartApplyInfo[partKey] or { action = 'repair', type = partKey }
+    local toast = ('%s x%d used'):format(item.label or itemName, count)
+    local payload = { net = vehNetId, action = info.action, type = info.type, toast = toast, wheel = wheel, qty = count }
+
+    TriggerClientEvent('pf_mech:applyPart', -1, payload)
+
+    cb(true, 'Repair completed')
+end)
+
