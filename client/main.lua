@@ -480,56 +480,106 @@ local ItemToModTypes = Config.ItemModMap or {
 }
 
 local function openModPicker(itemName, veh)
+  if not DoesEntityExist(veh) then return end
+  
   SetVehicleModKit(veh, 0)
   local opts = {}
   local types = ItemToModTypes[itemName] or {}
   for _, mtype in ipairs(types) do
     local count = GetNumVehicleMods(veh, mtype)
     if count and count > 0 then
-      opts[#opts+1] = { header = (ModTypeNames[mtype] or ('Mod '..mtype)), txt = ('%d options'):format(count), params = { isParent = true, mtype = mtype } }
+      opts[#opts+1] = { 
+        header = (ModTypeNames[mtype] or ('Mod '..mtype)), 
+        txt = ('%d options'):format(count), 
+        params = { 
+          event = 'pf_mech:openModPickerLevel2', 
+          args = { 
+            item = itemName, 
+            modType = mtype,                      -- changed key name here
+            vehicle = NetworkGetNetworkIdFromEntity(veh) -- use consistent net id
+          }
+        } 
+      }
     end
   end
+  
   if #opts == 0 then
-    return TriggerEvent('QBCore:Notify', 'No available mods for this vehicle', 'error')
+    return QBCore.Functions.Notify('No available mods for this vehicle', 'error')
   end
 
   local menu = { { header='Select Category', isMenuHeader = true } }
   for _, o in ipairs(opts) do
-    menu[#menu+1] = {
-      header = o.header, txt = o.txt,
-      params = { event = 'pf_mech:openModPickerLevel2', args = { item = itemName, mtype = o.params.mtype } }
-    }
+    menu[#menu+1] = o
   end
   menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
   exports['qb-menu']:openMenu(menu)
 end
 
 RegisterNetEvent('pf_mech:openModPickerLevel2', function(args)
-  local item = args.item; local mtype = tonumber(args.mtype)
-  local veh = nearbyVeh(6.0); if veh == 0 then return end
+  local veh = NetworkGetEntityFromNetworkId(args.vehicle)
+  if not DoesEntityExist(veh) then return end
+
   SetVehicleModKit(veh, 0)
-  local count = GetNumVehicleMods(veh, mtype) or 0
-  local menu = { { header = (ModTypeNames[mtype] or ('Mod '..mtype)), isMenuHeader=true } }
+  local count = GetNumVehicleMods(veh, args.modType) or 0         -- use args.modType
+  local menu = { { header = (ModTypeNames[args.modType] or ('Mod '..args.modType)), isMenuHeader=true } }
+  
   for i=0,count-1 do
-    local lbl = GetModTextLabel(veh, mtype, i)
+    local lbl = GetModTextLabel(veh, args.modType, i)
     local nm  = (lbl and GetLabelText(lbl) ~= 'NULL') and GetLabelText(lbl) or ('Option '..(i+1))
     menu[#menu+1] = {
       header = nm, txt=('Apply'),
-      params = { event = 'pf_mech:confirmModApply', args = { item=item, mtype=mtype, modIndex=i } }
+      params = { 
+        event = 'pf_mech:confirmModApply', 
+        args = { 
+          item = args.item, 
+          modType = args.modType,    -- ensure modType flows down
+          modIndex = i,
+          vehicle = args.vehicle 
+        }
+      }
     }
   end
-  menu[#menu+1] = { header='Back', params={ event='pf_mech:openModPickerRoot', args={ item=item } } }
+  menu[#menu+1] = { header='Back', params={ event='pf_mech:openModPickerRoot', args={ item=args.item, vehicle=args.vehicle } } }
   exports['qb-menu']:openMenu(menu)
 end)
+
+-- Update root picker to handle vehicle parameter
 RegisterNetEvent('pf_mech:openModPickerRoot', function(args)
-  local veh = nearbyVeh(6.0); if veh == 0 then return end
+  local veh = NetworkGetEntityFromNetworkId(args.vehicle)
+  if not DoesEntityExist(veh) then return end
   openModPicker(args.item, veh)
 end)
+
 RegisterNetEvent('pf_mech:confirmModApply', function(args)
-  local veh = nearbyVeh(6.0); if veh == 0 then return end
-  if not DoProgress('Installing part...', timeForAction('setMod'), 'amb@world_human_vehicle_mechanic@male@base', 'base') then return end
-  local px,py,pz = table.unpack(GetEntityCoords(PlayerPedId()))
-  TriggerServerEvent('pf_mech:usePart', args.item, NetworkGetNetworkIdFromEntity(veh), nil, px,py,pz, { modType=args.mtype, modIndex=args.modIndex })
+    local veh = NetworkGetEntityFromNetworkId(args.vehicle)
+    if not DoesEntityExist(veh) then 
+        QBCore.Functions.Notify('Vehicle not found', 'error')
+        return 
+    end
+
+    -- Start installation
+    if not DoProgress('Installing part...', timeForAction('setMod'), 'amb@world_human_vehicle_mechanic@male@base', 'base') then 
+        return 
+    end
+
+    -- Send to server for item removal and authoritative sync
+    TriggerServerEvent('pf_mech:server:applyMod', {
+        vehicle = args.vehicle,
+        item = args.item,
+        modType = args.modType,
+        modIndex = args.modIndex
+    })
+end)
+
+-- Add new handler for server confirmation
+RegisterNetEvent('pf_mech:client:modApplied', function(data)
+    local veh = NetworkGetEntityFromNetworkId(data.vehicle)
+    if not DoesEntityExist(veh) then return end
+    
+    SetVehicleModKit(veh, 0)
+    SetVehicleMod(veh, tonumber(data.modType) or data.modType, tonumber(data.modIndex) or data.modIndex, false)
+    
+    QBCore.Functions.Notify('Modification installed', 'success')
 end)
 
 -- main part entry
@@ -587,17 +637,16 @@ RegisterNetEvent('pf_mech:applyPart', function(data)
 
     if data.action == 'repair' then
         if data.type == 'body' then
-            -- Fix: each part repairs exactly 20% (200.0 points) of body damage
-            -- Note: SetVehicleBodyHealth expects 0.0-1000.0
-            local curHealth = GetVehicleBodyHealth(veh)
-            local newHealth = curHealth + (200.0 * qty)
-            SetVehicleBodyHealth(veh, math.min(1000.0, newHealth))
+            -- Fix: repair both body health AND visual damage
+            local newHealth = math.min(1000.0, GetVehicleBodyHealth(veh) + (200.0 * qty))
+            SetVehicleBodyHealth(veh, newHealth)
             
-            -- Force vehicle to re-sync its damage state
-            local cur = GetVehicleBodyHealth(veh)
-            SetVehicleBodyHealth(veh, cur - 1.0)
-            Wait(0)
-            SetVehicleBodyHealth(veh, cur)
+            -- Clear visual damage when fully repaired
+            if newHealth >= 1000.0 then
+                SetVehicleDeformationFixed(veh)
+                SetVehicleFixed(veh)
+                SetVehicleDirtLevel(veh, 0.0)
+            end
             
             -- Update damage tracking
             partDamage.body = math.max(0, (partDamage.body or 0) - (20 * qty))
@@ -847,6 +896,170 @@ RegisterNetEvent('pf-mechanicjob:client:doRepairWithItems', function(data)
     end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, wheel)
 end)
 
+-- Fix the QBCore:Client:UseItem handler - restore proper routing
+RegisterNetEvent('QBCore:Client:UseItem', function(item)
+    local name = item and item.name or nil
+    if not name then return end
+
+    -- Note: paint_kit and tint_supplies are handled via server CreateUseableItem
+    -- This handler only catches items that weren't registered server-side
+    
+    -- cosmetic items (mods)
+    if name == "spoiler" or name == "bumper" or name == "skirts" or name == "exhaust"
+       or name == "rollcage" or name == "hood" or name == "roof" then
+        -- This will be caught by server CreateUseableItem instead
+        return
+    end
+end)
+
+-- Simple color palette
+local PaintColors = {
+    { name = "Black",    rgb = {0,0,0} },
+    { name = "White",    rgb = {255,255,255} },
+    { name = "Red",      rgb = {200,20,30} },
+    { name = "Blue",     rgb = {10,90,200} },
+    { name = "Green",    rgb = {10,180,60} },
+    { name = "Yellow",   rgb = {240,210,0} },
+    { name = "Orange",   rgb = {255,140,20} },
+    { name = "Purple",   rgb = {140,30,140} },
+    { name = "Pink",     rgb = {255,100,160} },
+    { name = "Grey",     rgb = {120,120,120} },
+    { name = "Brown",    rgb = {140,90,45} },
+    { name = "Silver",   rgb = {180,180,180} },
+    { name = "Gold",     rgb = {212,175,55} }
+}
+
+-- Paint/Tint entry point
+RegisterNetEvent('pf-mechanicjob:client:usePaint', function(itemName)
+    local veh = nearbyVeh(4.0)
+    if veh == 0 then 
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return 
+    end
+
+    local vehNet = NetworkGetNetworkIdFromEntity(veh)
+    
+    -- tint_supplies goes straight to tint menu
+    if itemName == 'tint_supplies' then
+        local menu = {
+            { header = 'Window Tint Options', isMenuHeader = true }
+        }
+        local tintNames = {
+            [0] = 'None (Clear)',
+            [1] = 'Pure Black',
+            [2] = 'Dark Smoke',
+            [3] = 'Light Smoke',
+            [4] = 'Stock',
+            [5] = 'Limo',
+            [6] = 'Green'
+        }
+        for i=0,6 do
+            menu[#menu+1] = {
+                header = tintNames[i],
+                txt = 'Apply tint level '..i,
+                params = {
+                    event = 'pf_mech:confirmPaintApply',
+                    args = { item = itemName, vehicle = vehNet, category = 'tint', tintLevel = i }
+                }
+            }
+        end
+        menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+        exports['qb-menu']:openMenu(menu)
+        return
+    end
+    
+    -- paint_kit shows body paint menu
+    local menu = {
+        { header = 'Paint Options', isMenuHeader = true },
+        { header = 'Primary Color', txt = 'Choose a primary color', params = { event = 'pf_mech:openPaintPicker', args = { item = itemName, vehicle = vehNet, category = 'primary' } } },
+        { header = 'Secondary Color', txt = 'Choose a secondary color', params = { event = 'pf_mech:openPaintPicker', args = { item = itemName, vehicle = vehNet, category = 'secondary' } } },
+        { header = 'Pearlescent', txt = 'Choose pearlescent', params = { event = 'pf_mech:openPaintPicker', args = { item = itemName, vehicle = vehNet, category = 'pearlescent' } } },
+        { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+    }
+    exports['qb-menu']:openMenu(menu)
+end)
+
+RegisterNetEvent('pf_mech:openPaintPicker', function(args)
+    if not args then return end
+    local veh = NetworkGetEntityFromNetworkId(args.vehicle)
+    if not DoesEntityExist(veh) then return end
+
+    local menu = { { header = args.category:gsub('^%l', string.upper), isMenuHeader = true } }
+
+    if args.category == 'pearlescent' then
+        for i=0,5 do
+            menu[#menu+1] = {
+                header = 'Pearlescent '..i,
+                params = {
+                    event = 'pf_mech:confirmPaintApply',
+                    args = { item = args.item, vehicle = args.vehicle, category = 'pearlescent', preset = i }
+                }
+            }
+        end
+    else
+        for _, c in ipairs(PaintColors) do
+            menu[#menu+1] = {
+                header = c.name,
+                txt = string.format('RGB: %d,%d,%d', c.rgb[1], c.rgb[2], c.rgb[3]),
+                params = {
+                    event = 'pf_mech:confirmPaintApply',
+                    args = { item = args.item, vehicle = args.vehicle, category = args.category, rgb = c.rgb }
+                }
+            }
+        end
+    end
+
+    menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+    exports['qb-menu']:openMenu(menu)
+end)
+
+RegisterNetEvent('pf_mech:confirmPaintApply', function(args)
+    if not args or not args.vehicle or not args.item then return end
+
+    local veh = NetworkGetEntityFromNetworkId(args.vehicle)
+    if not DoesEntityExist(veh) then 
+        QBCore.Functions.Notify('Vehicle not found', 'error')
+        return 
+    end
+
+    if not DoProgress('Applying...', 4000, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+        return
+    end
+
+    TriggerServerEvent('pf_mech:server:applyPaint', {
+        vehicle = args.vehicle,
+        item = args.item,
+        category = args.category,
+        rgb = args.rgb,
+        preset = args.preset,
+        tintLevel = args.tintLevel
+    })
+end)
+
+RegisterNetEvent('pf_mech:client:paintApplied', function(data)
+    if not data or not data.vehicle then return end
+    
+    local veh = NetworkGetEntityFromNetworkId(data.vehicle)
+    if not DoesEntityExist(veh) then return end
+
+    if data.category == 'primary' and data.rgb then
+        SetVehicleCustomPrimaryColour(veh, data.rgb[1], data.rgb[2], data.rgb[3])
+        QBCore.Functions.Notify('Primary color applied', 'success')
+        
+    elseif data.category == 'secondary' and data.rgb then
+        SetVehicleCustomSecondaryColour(veh, data.rgb[1], data.rgb[2], data.rgb[3])
+        QBCore.Functions.Notify('Secondary color applied', 'success')
+        
+    elseif data.category == 'pearlescent' and data.preset ~= nil then
+        SetVehicleExtraColours(veh, data.preset, 0)
+        QBCore.Functions.Notify('Pearlescent applied', 'success')
+        
+    elseif data.category == 'tint' and data.tintLevel ~= nil then
+        SetVehicleWindowTint(veh, data.tintLevel)
+        QBCore.Functions.Notify('Tint applied', 'success')
+    end
+end)
+
 CreateThread(function()
     while true do
         local h = GetClockHours()
@@ -855,3 +1068,31 @@ CreateThread(function()
         Wait(1000)
     end
 end)
+
+-- Add these near the top with other local variables
+local CosmeticItems = {
+    spoiler = true,
+    bumper = true,
+    skirts = true,
+    exhaust = true,
+    rollcage = true,
+    hood = true,
+    roof = true
+}
+
+-- New: simple color palettes (RGB) used by the paint picker
+local PaintColors = {
+    { name = "Black",    rgb = {0,0,0} },
+    { name = "White",    rgb = {255,255,255} },
+    { name = "Red",      rgb = {200,20,30} },
+    { name = "Blue",     rgb = {10,90,200} },
+    { name = "Green",    rgb = {10,180,60} },
+    { name = "Yellow",   rgb = {240,210,0} },
+    { name = "Orange",   rgb = {255,140,20} },
+    { name = "Purple",   rgb = {140,30,140} },
+    { name = "Pink",     rgb = {255,100,160} },
+    { name = "Grey",     rgb = {120,120,120} },
+    { name = "Brown",    rgb = {140,90,45} },
+    { name = "Silver",   rgb = {180,180,180} },
+    { name = "Gold",     rgb = {212,175,55} }
+}

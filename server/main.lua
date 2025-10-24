@@ -627,3 +627,214 @@ QBCore.Functions.CreateCallback('pf_mech:server:attemptRepair', function(source,
     cb(true, 'Repair completed')
 end)
 
+-- Register useable items
+local function RegisterItems()
+    local cosmeticItems = {
+        'spoiler',
+        'bumper',
+        'skirts',
+        'exhaust',
+        'rollcage',
+        'hood',
+        'roof'
+    }
+    
+    local paintItems = {
+        'paint_kit',
+        'tint_supplies'
+    }
+    
+    -- Register cosmetic items
+    for _, item in ipairs(cosmeticItems) do
+        QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
+            TriggerClientEvent('pf-mechanicjob:client:usePart', source, itemInfo)
+        end)
+    end
+    
+    -- Register paint/tint items - send just the name
+    for _, item in ipairs(paintItems) do
+        QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
+            TriggerClientEvent('pf-mechanicjob:client:usePaint', source, item)
+        end)
+    end
+end
+
+AddEventHandler('onResourceStart', function(resourceName)
+    if resourceName == GetCurrentResourceName() then
+        RegisterItems()
+    end
+end)
+
+RegisterNetEvent('pf_mech:server:removeMod', function(item)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    Player.Functions.RemoveItem(item, 1)
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[item], "remove")
+end)
+
+-- Add this new event handler
+RegisterNetEvent('pf_mech:server:applyMod', function(data)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    
+    -- Verify player has the item
+    local item = Player.Functions.GetItemByName(data.item)
+    if not item then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required part', 'error')
+        return
+    end
+    
+    -- Remove item
+    if Player.Functions.RemoveItem(data.item, 1) then
+        -- Broadcast mod application to all clients (to ensure sync)
+        TriggerClientEvent('pf_mech:client:modApplied', -1, {
+            vehicle = data.vehicle,
+            modType = data.modType,
+            modIndex = data.modIndex
+        })
+        
+        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[data.item], "remove")
+    else
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to install part', 'error')
+    end
+end)
+
+-- Server-side: apply cosmetic mod (called from client after progress completes)
+RegisterNetEvent('pf_mech:server:applyMod', function(data)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not data then return end
+
+    local itemName = data.item
+    local modType  = data.modType
+    local modIndex = data.modIndex
+    local vehicleNet = data.vehicle
+
+    -- verify item exists in inventory
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: ' .. tostring(itemName), 'error')
+        return
+    end
+
+    -- remove 1 item
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to remove item: ' .. tostring(itemName), 'error')
+        return
+    end
+
+    -- Broadcast to all clients to apply the mod (keeps visuals in sync)
+    TriggerClientEvent('pf_mech:client:modApplied', -1, {
+        vehicle = vehicleNet,
+        modType = modType,
+        modIndex = modIndex
+    })
+
+    -- Show item box to user who used the item
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+end)
+
+-- Server: apply paint/tint (consumes 1 paint_kit or tint_supplies)
+RegisterNetEvent('pf_mech:server:applyPaint', function(payload)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not payload or not payload.item then return end
+
+    local itemName = payload.item
+    local it = Player.Functions.GetItemByName(itemName)
+    if not it then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: '..tostring(itemName), 'error')
+        return
+    end
+
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to consume '..tostring(itemName), 'error')
+        return
+    end
+
+    -- Broadcast to all clients
+    TriggerClientEvent('pf_mech:client:paintApplied', -1, {
+        vehicle = payload.vehicle,
+        item = itemName,
+        category = payload.category,
+        rgb = payload.rgb,
+        preset = payload.preset,
+        tintLevel = payload.tintLevel
+    })
+
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+end)
+
+-- Server-side: apply cosmetic mod (called from client after progress completes)
+RegisterNetEvent('pf_mech:server:applyMod', function(data)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not data then return end
+
+    local itemName = data.item
+    local modType  = data.modType
+    local modIndex = data.modIndex
+    local vehicleNet = data.vehicle
+
+    -- verify item exists in inventory
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: ' .. tostring(itemName), 'error')
+        return
+    end
+
+    -- remove 1 item
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to remove item: ' .. tostring(itemName), 'error')
+        return
+    end
+
+    -- Broadcast to all clients to apply the mod (keeps visuals in sync)
+    TriggerClientEvent('pf_mech:client:modApplied', -1, {
+        vehicle = vehicleNet,
+        modType = modType,
+        modIndex = modIndex
+    })
+
+    -- Show item box to user who used the item
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+end)
+
+-- Server: apply paint (consumes 1 paint_kit / tint_supplies)
+RegisterNetEvent('pf_mech:server:applyPaint', function(payload)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not payload or not payload.item then return end
+
+    local itemName = payload.item
+    local it = Player.Functions.GetItemByName(itemName)
+    if not it then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: '..tostring(itemName), 'error')
+        return
+    end
+
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to consume '..tostring(itemName), 'error')
+        return
+    end
+
+    -- Broadcast to all clients
+    TriggerClientEvent('pf_mech:client:paintApplied', -1, {
+        vehicle = payload.vehicle,
+        item = itemName,
+        category = payload.category,
+        rgb = payload.rgb,
+        preset = payload.preset,
+        tintLevel = payload.tintLevel  -- pass tintLevel for window tint
+    })
+
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+end)
+
