@@ -644,6 +644,10 @@ local function RegisterItems()
         'tint_supplies'
     }
     
+    local wheelItems = {
+        'rims'  -- changed from wheel_kit to rims
+    }
+    
     -- Register cosmetic items
     for _, item in ipairs(cosmeticItems) do
         QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
@@ -651,10 +655,17 @@ local function RegisterItems()
         end)
     end
     
-    -- Register paint/tint items - send just the name
+    -- Register paint/tint items
     for _, item in ipairs(paintItems) do
         QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
             TriggerClientEvent('pf-mechanicjob:client:usePaint', source, item)
+        end)
+    end
+    
+    -- Register wheel items
+    for _, item in ipairs(wheelItems) do
+        QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
+            TriggerClientEvent('pf-mechanicjob:client:useWheels', source, item)
         end)
     end
 end
@@ -833,6 +844,36 @@ RegisterNetEvent('pf_mech:server:applyPaint', function(payload)
         rgb = payload.rgb,
         preset = payload.preset,
         tintLevel = payload.tintLevel  -- pass tintLevel for window tint
+    })
+
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+end)
+
+-- Server: apply wheel mod
+RegisterNetEvent('pf_mech:server:applyWheels', function(payload)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not payload or not payload.item then return end
+
+    local itemName = payload.item
+    local it = Player.Functions.GetItemByName(itemName)
+    if not it then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: '..tostring(itemName), 'error')
+        return
+    end
+
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to consume '..tostring(itemName), 'error')
+        return
+    end
+
+    -- Broadcast to all clients
+    TriggerClientEvent('pf_mech:client:wheelsApplied', -1, {
+        vehicle = payload.vehicle,
+        wheelType = payload.wheelType,
+        wheelIndex = payload.wheelIndex,
+        wheelColor = payload.wheelColor
     })
 
     TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")

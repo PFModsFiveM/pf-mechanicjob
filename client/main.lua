@@ -719,43 +719,64 @@ RegisterNetEvent('pf-mechanicjob:client:useMechanicTools', function()
         return
     end
 
-    -- Fix: properly calculate health percentages from 0-1000 scale
-    local engineHealthPct = math.floor((GetVehicleEngineHealth(vehicle) / 10.0)) -- already 0-100
-    local bodyHealthPct   = math.floor((GetVehicleBodyHealth(vehicle) / 10.0))   -- already 0-100
-    local tankHealthPct   = math.floor((GetVehiclePetrolTankHealth(vehicle) / 10.0))
+    -- Add safety check
+    if not DoesEntityExist(vehicle) then
+        QBCore.Functions.Notify('Vehicle no longer exists', 'error')
+        return
+    end
 
-    -- Force re-sync current body health
-    local curBody = GetVehicleBodyHealth(vehicle)
-    SetVehicleBodyHealth(vehicle, curBody - 1.0)
-    Wait(0)
-    SetVehicleBodyHealth(vehicle, curBody)
+    -- Fix: properly calculate health percentages from 0-1000 scale with safety checks
+    local engineHealth = GetVehicleEngineHealth(vehicle)
+    local bodyHealth = GetVehicleBodyHealth(vehicle)
+    local tankHealth = GetVehiclePetrolTankHealth(vehicle)
+    
+    -- Clamp values to prevent errors
+    engineHealth = math.max(0, math.min(1000, tonumber(engineHealth) or 0))
+    bodyHealth = math.max(0, math.min(1000, tonumber(bodyHealth) or 0))
+    tankHealth = math.max(0, math.min(1000, tonumber(tankHealth) or 0))
+    
+    local engineHealthPct = math.floor(engineHealth / 10.0)
+    local bodyHealthPct = math.floor(bodyHealth / 10.0)
+    local tankHealthPct = math.floor(tankHealth / 10.0)
 
-    -- overall percents
-    local state = Entity(vehicle).state
-    local partDamage = state.partDamage or {}
+    -- Safely get entity state with error handling
+    local partDamage = {}
+    local success, state = pcall(function()
+        return Entity(vehicle).state
+    end)
+    
+    if success and state then
+        partDamage = state.partDamage or {}
+    end
 
-    -- compute per-part health% (health = 100 - damage)
+    -- compute per-part health% (health = 100 - damage) with safety
     local health = {}
-    health.sparkplugs = 100 - (tonumber(partDamage.sparkplugs) or 0)
-    health.carbattery = 100 - (tonumber(partDamage.carbattery) or 0)
-    health.engine_oil = 100 - (tonumber(partDamage.oil) or 0)
-    health.oil_filter = 100 - (tonumber(partDamage.oil_filter) or 0)
-    health.susp_arm = 100 - (tonumber(partDamage.suspension) or 0)
-    health.axleparts = 100 - (tonumber(partDamage.axle) or 0)
+    health.sparkplugs = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.sparkplugs) or 0))))
+    health.carbattery = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.carbattery) or 0))))
+    health.engine_oil = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.oil) or 0))))
+    health.oil_filter = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.oil_filter) or 0))))
+    health.susp_arm = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.suspension) or 0))))
+    health.axleparts = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.axle) or 0))))
     health.engine_overall = engineHealthPct
     health.body_overall = bodyHealthPct
 
     local menu = {
-        { header = "Vehicle Diagnostics", txt = GetVehicleNumberPlateText(vehicle), isMenuHeader = true, params = {} },
+        { header = "Vehicle Diagnostics", txt = GetVehicleNumberPlateText(vehicle) or 'Unknown', isMenuHeader = true, params = {} },
         { header = "Overall Condition", txt = string.format("Engine %d%% • Body %d%% • Tank %d%%", engineHealthPct, bodyHealthPct, tankHealthPct), params = {} }
     }
 
     -- helper to append a part entry with computed needed count
     local function addPartEntry(ruleKey, label, hp)
+        -- Convert to number and ensure it's an integer
+        hp = math.floor(tonumber(hp) or 0)
+        hp = math.max(0, math.min(100, hp))
+        
         local needed = partsNeededForRepair(ruleKey, hp)
-        local txt = ("Health: %d%%  •  Needs: %d"):format(hp, needed)
+        needed = math.floor(tonumber(needed) or 0)
+        
+        local txt = string.format("Health: %d%%  •  Needs: %d", hp, needed)
         menu[#menu+1] = {
-            header = string.format("%s — %d%%", label, hp),
+            header = string.format("%s — %d%%", tostring(label), hp),
             txt = txt,
             params = { event = 'pf-mechanicjob:client:openRepairSuggest', args = { vehicle = vehicle, part = ruleKey, needed = needed } }
         }
@@ -775,39 +796,38 @@ RegisterNetEvent('pf-mechanicjob:client:useMechanicTools', function()
     addPartEntry('susp_arm',    DiagnosticLabels.susp_arm or 'Suspension Arm', health.susp_arm)
     addPartEntry('axleparts',   DiagnosticLabels.axleparts or 'Axle Parts', health.axleparts)
 
-    -- Tires: detect actual burst tyres and create per-wheel entries
+    -- Tires: detect actual burst tyres with safety
     do
         local burstCount = 0
-        local anyBurst = false
-        -- tyre indices 0..5
         local wheelNames = { [0]='Front Left', [1]='Front Right', [2]='Rear Left', [3]='Rear Right', [4]='Middle Left', [5]='Middle Right' }
+        
         for i=0,5 do
-            if IsVehicleTyreBurst(vehicle, i, false) then
-                anyBurst = true
+            local isBurst = false
+            pcall(function()
+                isBurst = IsVehicleTyreBurst(vehicle, i, false)
+            end)
+            
+            if isBurst then
                 burstCount = burstCount + 1
                 local label = wheelNames[i] or ('Wheel '..tostring(i))
-                local healthPct = 0
                 menu[#menu+1] = {
-                    header = string.format("Tire %s — %d%%", label, healthPct),
-                    txt = string.format("Health: %d%%  •  Needs: %d", healthPct, 1),
+                    header = string.format("Tire %s — 0%%", label),
+                    txt = "Health: 0%  •  Needs: 1",
                     params = { event = 'pf-mechanicjob:client:openRepairSuggest', args = { vehicle = vehicle, part = 'tire_new', needed = 1, wheel = i } }
                 }
             end
         end
 
-        if not anyBurst then
-            -- no bursts found — check state.partDamage fallback if available
-            local tiresState = partDamage.tires
-            if type(tiresState) == 'table' then
-                -- list any damaged tyres from state (keys like lf/rf/lr/rr)
-                for k,v in pairs(tiresState) do
-                    local dmg = tonumber(v) or 0
+        if burstCount == 0 then
+            -- Check state tire damage
+            if type(partDamage.tires) == 'table' then
+                for k,v in pairs(partDamage.tires) do
+                    local dmg = math.floor(tonumber(v) or 0)
                     if dmg > 0 then
                         local healthPct = math.max(0, 100 - dmg)
-                        local label = (k:upper()) -- show key
                         menu[#menu+1] = {
-                            header = string.format("Tire %s — %d%%", label, healthPct),
-                            txt = string.format("Health: %d%%  •  Needs: %d", healthPct, 1),
+                            header = string.format("Tire %s — %d%%", tostring(k):upper(), healthPct),
+                            txt = string.format("Health: %d%%  •  Needs: 1", healthPct),
                             params = { event = 'pf-mechanicjob:client:openRepairSuggest', args = { vehicle = vehicle, part = 'tire_new', needed = 1, wheel = k } }
                         }
                         burstCount = burstCount + 1
@@ -816,7 +836,6 @@ RegisterNetEvent('pf-mechanicjob:client:useMechanicTools', function()
             end
 
             if burstCount == 0 then
-                -- healthy tyres
                 menu[#menu+1] = {
                     header = "Tires — OK",
                     txt = "No tyres need replacement",
@@ -828,7 +847,15 @@ RegisterNetEvent('pf-mechanicjob:client:useMechanicTools', function()
 
     menu[#menu+1] = { header = "Close", params = { event = "qb-menu:client:closeMenu" } }
 
-    exports['qb-menu']:openMenu(menu)
+    -- Open menu with error handling
+    local success, err = pcall(function()
+        exports['qb-menu']:openMenu(menu)
+    end)
+    
+    if not success then
+        print('[pf-mechanicjob] Error opening diagnostic menu:', err)
+        QBCore.Functions.Notify('Error opening diagnostic menu', 'error')
+    end
 end)
 
 -- REPLACE old pf-mechanicjob:client:openRepairSuggest handler with this updated version
@@ -912,7 +939,39 @@ RegisterNetEvent('QBCore:Client:UseItem', function(item)
     end
 end)
 
--- Simple color palette
+-- Add these near the top with other local variables (SINGLE DEFINITION ONLY)
+local CosmeticItems = {
+    spoiler = true,
+    bumper = true,
+    skirts = true,
+    exhaust = true,
+    rollcage = true,
+    hood = true,
+    roof = true
+}
+
+RegisterNetEvent('pf-mechanicjob:client:usePart', function(item)
+    local name = item and item.name or nil
+    if not name then return end
+    
+    if CosmeticItems[name] then
+        local vehicle = nearbyVeh(3.0)
+        if vehicle == 0 then
+            QBCore.Functions.Notify('No vehicle nearby', 'error')
+            return
+        end
+        
+        SetVehicleModKit(vehicle, 0)
+        
+        if ItemToModTypes[name] then
+            openModPicker(name, vehicle)
+        else
+            QBCore.Functions.Notify('Invalid mod type', 'error')
+        end
+    end
+end)
+
+-- Simple color palette (SINGLE DEFINITION - REMOVE THE DUPLICATE BELOW)
 local PaintColors = {
     { name = "Black",    rgb = {0,0,0} },
     { name = "White",    rgb = {255,255,255} },
@@ -1069,30 +1128,186 @@ CreateThread(function()
     end
 end)
 
--- Add these near the top with other local variables
-local CosmeticItems = {
-    spoiler = true,
-    bumper = true,
-    skirts = true,
-    exhaust = true,
-    rollcage = true,
-    hood = true,
-    roof = true
-}
+-- Wheel/Rim customization entry point
+RegisterNetEvent('pf-mechanicjob:client:useWheels', function(itemName)
+    local veh = nearbyVeh(4.0)
+    if veh == 0 then 
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return 
+    end
 
--- New: simple color palettes (RGB) used by the paint picker
-local PaintColors = {
-    { name = "Black",    rgb = {0,0,0} },
-    { name = "White",    rgb = {255,255,255} },
-    { name = "Red",      rgb = {200,20,30} },
-    { name = "Blue",     rgb = {10,90,200} },
-    { name = "Green",    rgb = {10,180,60} },
-    { name = "Yellow",   rgb = {240,210,0} },
-    { name = "Orange",   rgb = {255,140,20} },
-    { name = "Purple",   rgb = {140,30,140} },
-    { name = "Pink",     rgb = {255,100,160} },
-    { name = "Grey",     rgb = {120,120,120} },
-    { name = "Brown",    rgb = {140,90,45} },
-    { name = "Silver",   rgb = {180,180,180} },
-    { name = "Gold",     rgb = {212,175,55} }
-}
+    local vehNet = NetworkGetNetworkIdFromEntity(veh)
+    
+    -- Show wheel type menu first
+    local menu = {
+        { header = 'Wheel Options', isMenuHeader = true },
+        { header = 'Sport Wheels', txt = 'Browse sport wheels', params = { event = 'pf_mech:openWheelPicker', args = { item = itemName, vehicle = vehNet, wheelType = 0 } } },
+        { header = 'Muscle Wheels', txt = 'Browse muscle wheels', params = { event = 'pf_mech:openWheelPicker', args = { item = itemName, vehicle = vehNet, wheelType = 1 } } },
+        { header = 'Lowrider Wheels', txt = 'Browse lowrider wheels', params = { event = 'pf_mech:openWheelPicker', args = { item = itemName, vehicle = vehNet, wheelType = 2 } } },
+        { header = 'SUV Wheels', txt = 'Browse SUV wheels', params = { event = 'pf_mech:openWheelPicker', args = { item = itemName, vehicle = vehNet, wheelType = 3 } } },
+        { header = 'Offroad Wheels', txt = 'Browse offroad wheels', params = { event = 'pf_mech:openWheelPicker', args = { item = itemName, vehicle = vehNet, wheelType = 4 } } },
+        { header = 'Tuner Wheels', txt = 'Browse tuner wheels', params = { event = 'pf_mech:openWheelPicker', args = { item = itemName, vehicle = vehNet, wheelType = 5 } } },
+        { header = 'High End Wheels', txt = 'Browse high end wheels', params = { event = 'pf_mech:openWheelPicker', args = { item = itemName, vehicle = vehNet, wheelType = 7 } } },
+        { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+    }
+    exports['qb-menu']:openMenu(menu)
+end)
+
+RegisterNetEvent('pf_mech:openWheelPicker', function(args)
+    if not args then return end
+    local veh = NetworkGetEntityFromNetworkId(args.vehicle)
+    if not DoesEntityExist(veh) then return end
+
+    SetVehicleModKit(veh, 0)
+    SetVehicleWheelType(veh, args.wheelType)
+    
+    local wheelCount = GetNumVehicleMods(veh, 23) -- 23 = front wheels mod type
+    local wheelTypeNames = {
+        [0] = 'Sport',
+        [1] = 'Muscle',
+        [2] = 'Lowrider',
+        [3] = 'SUV',
+        [4] = 'Offroad',
+        [5] = 'Tuner',
+        [7] = 'High End'
+    }
+    
+    local menu = { { header = (wheelTypeNames[args.wheelType] or 'Wheels'), isMenuHeader = true } }
+
+    -- Add stock option
+    menu[#menu+1] = {
+        header = 'Stock Wheels',
+        txt = 'Restore stock wheels',
+        params = {
+            event = 'pf_mech:openWheelColorPicker',
+            args = { item = args.item, vehicle = args.vehicle, wheelType = args.wheelType, wheelIndex = -1 }
+        }
+    }
+
+    -- Add all wheel options with proper names
+    for i = 0, wheelCount - 1 do
+        local modLabel = GetModTextLabel(veh, 23, i)
+        local wheelName = 'Wheel #'..(i+1) -- fallback
+        
+        if modLabel and modLabel ~= 'NULL' then
+            local labelText = GetLabelText(modLabel)
+            if labelText and labelText ~= 'NULL' then
+                wheelName = labelText
+            end
+        end
+        
+        menu[#menu+1] = {
+            header = wheelName,
+            txt = 'Select this wheel',
+            params = {
+                event = 'pf_mech:openWheelColorPicker',
+                args = { item = args.item, vehicle = args.vehicle, wheelType = args.wheelType, wheelIndex = i }
+            }
+        }
+    end
+
+    menu[#menu+1] = { header = 'Back', params = { event = 'pf-mechanicjob:client:useWheels', args = args.item } }
+    menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+    exports['qb-menu']:openMenu(menu)
+end)
+
+RegisterNetEvent('pf_mech:openWheelColorPicker', function(args)
+    if not args then return end
+    local veh = NetworkGetEntityFromNetworkId(args.vehicle)
+    if not DoesEntityExist(veh) then return end
+
+    local menu = { { header = 'Wheel Color', isMenuHeader = true } }
+    
+    local wheelColors = {
+        { name = 'Black', id = 0 },
+        { name = 'Carbon Black', id = 1 },
+        { name = 'Graphite', id = 2 },
+        { name = 'Anthracite Black', id = 3 },
+        { name = 'Black Steel', id = 4 },
+        { name = 'Dark Steel', id = 5 },
+        { name = 'Silver', id = 6 },
+        { name = 'Bluish Silver', id = 7 },
+        { name = 'Rolled Steel', id = 8 },
+        { name = 'Shadow Silver', id = 9 },
+        { name = 'Stone Silver', id = 10 },
+        { name = 'Midnight Silver', id = 11 },
+        { name = 'Cast Iron Silver', id = 12 },
+        { name = 'Red', id = 27 },
+        { name = 'Torino Red', id = 28 },
+        { name = 'Formula Red', id = 29 },
+        { name = 'Lava Red', id = 150 },
+        { name = 'Blaze Red', id = 30 },
+        { name = 'Grace Red', id = 31 },
+        { name = 'Garnet Red', id = 32 },
+        { name = 'Desert Tan', id = 33 },
+        { name = 'Default Alloy', id = 156 },
+        { name = 'Blue', id = 64 },
+        { name = 'Dark Blue', id = 65 },
+        { name = 'Midnight Blue', id = 66 },
+        { name = 'Midnight Purple', id = 141 },
+        { name = 'Schafter Purple', id = 145 },
+        { name = 'Green', id = 55 },
+        { name = 'Lime Green', id = 92 },
+        { name = 'Orange', id = 38 },
+        { name = 'Gold', id = 37 },
+        { name = 'Yellow', id = 88 }
+    }
+
+    for _, color in ipairs(wheelColors) do
+        menu[#menu+1] = {
+            header = color.name,
+            txt = 'Apply color',
+            params = {
+                event = 'pf_mech:confirmWheelApply',
+                args = { 
+                    item = args.item, 
+                    vehicle = args.vehicle, 
+                    wheelType = args.wheelType, 
+                    wheelIndex = args.wheelIndex,
+                    wheelColor = color.id
+                }
+            }
+        }
+    end
+
+    menu[#menu+1] = { header = 'Back', params = { event = 'pf_mech:openWheelPicker', args = { item = args.item, vehicle = args.vehicle, wheelType = args.wheelType } } }
+    menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+    exports['qb-menu']:openMenu(menu)
+end)
+
+RegisterNetEvent('pf_mech:confirmWheelApply', function(args)
+    if not args or not args.vehicle or not args.item then return end
+
+    local veh = NetworkGetEntityFromNetworkId(args.vehicle)
+    if not DoesEntityExist(veh) then 
+        QBCore.Functions.Notify('Vehicle not found', 'error')
+        return 
+    end
+
+    if not DoProgress('Installing wheels...', 5000, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+        return
+    end
+
+    TriggerServerEvent('pf_mech:server:applyWheels', {
+        vehicle = args.vehicle,
+        item = args.item,
+        wheelType = args.wheelType,
+        wheelIndex = args.wheelIndex,
+        wheelColor = args.wheelColor
+    })
+end)
+
+RegisterNetEvent('pf_mech:client:wheelsApplied', function(data)
+    if not data or not data.vehicle then return end
+    
+    local veh = NetworkGetEntityFromNetworkId(data.vehicle)
+    if not DoesEntityExist(veh) then return end
+
+    SetVehicleModKit(veh, 0)
+    SetVehicleWheelType(veh, data.wheelType)
+    SetVehicleMod(veh, 23, data.wheelIndex, false) -- 23 = front wheels
+    SetVehicleMod(veh, 24, data.wheelIndex, false) -- 24 = rear wheels (for bikes/some vehicles)
+    SetVehicleExtraColours(veh, GetVehicleExtraColours(veh), data.wheelColor)
+    
+    QBCore.Functions.Notify('Wheels installed', 'success')
+end)

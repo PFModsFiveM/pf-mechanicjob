@@ -25,7 +25,8 @@ shared_scripts {
 }
 
 client_scripts {
-  'client/main.lua'
+  'client/main.lua',
+  'client/damage.lua'
 }
 
 server_scripts {
