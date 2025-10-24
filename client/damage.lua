@@ -157,6 +157,8 @@ local function attemptVehicleStart(veh, damage)
     local batteryHealth = 100 - (tonumber(damage.carbattery) or 0)
     local sparkplugHealth = 100 - (tonumber(damage.sparkplugs) or 0)
     
+    print('[DAMAGE DEBUG] Attempting start - Battery:', batteryHealth, '% Sparkplugs:', sparkplugHealth, '%') -- Debug
+    
     -- Dead battery = no start
     if batteryHealth <= 0 then
         QBCore.Functions.Notify('🔋 Battery is completely dead!', 'error', 3000)
@@ -190,6 +192,8 @@ local function attemptVehicleStart(veh, damage)
         startChance = startChance * (sparkplugHealth / 100)
     end
     
+    print('[DAMAGE DEBUG] Start chance:', startChance, '%') -- Debug
+    
     local roll = math.random(1, 100)
     local started = roll <= startChance
     
@@ -203,10 +207,12 @@ local function attemptVehicleStart(veh, damage)
         else
             QBCore.Functions.Notify('⚡ Engine misfired', 'error', 2000)
         end
+        print('[DAMAGE DEBUG] Start FAILED (rolled', roll, 'needed <=', startChance, ')') -- Debug
     else
         if batteryHealth < 50 then
             QBCore.Functions.Notify('🔋 Engine started (battery weak)', 'warning', 2000)
         end
+        print('[DAMAGE DEBUG] Start SUCCESS') -- Debug
     end
     
     return started
@@ -264,15 +270,20 @@ CreateThread(function()
     end
 end)
 
--- NEW: Intercept engine starting
+-- REPLACE: Intercept engine starting (better detection)
+local lastEngineState = {}
+
 CreateThread(function()
     while true do
-        Wait(0)
+        Wait(100) -- Check every 100ms
         
         if not DamageConfig.enabled then goto continue end
         
         local ped = PlayerPedId()
-        if not IsPedInAnyVehicle(ped, false) then goto continue end
+        if not IsPedInAnyVehicle(ped, false) then 
+            lastEngineState = {}
+            goto continue 
+        end
         
         local veh = GetVehiclePedIsIn(ped, false)
         if not veh or veh == 0 then goto continue end
@@ -280,20 +291,25 @@ CreateThread(function()
         local driver = GetPedInVehicleSeat(veh, -1)
         if driver ~= ped then goto continue end
         
-        -- Detect when player tries to start engine
-        if IsControlJustPressed(0, 74) then -- INPUT_VEH_EXIT (H key, also engine on/off)
-            local damage = getVehicleDamage(veh)
-            if not damage then goto continue end
+        local plate = GetVehicleNumberPlateText(veh)
+        local isEngineOn = GetIsVehicleEngineRunning(veh)
+        local wasEngineOn = lastEngineState[plate]
+        
+        -- Detect engine start attempt (engine went from off to on)
+        if isEngineOn and not wasEngineOn then
+            print('[DAMAGE DEBUG] Engine start detected!') -- Debug
             
-            if not GetIsVehicleEngineRunning(veh) then
-                -- Trying to start engine
-                local plate = GetVehicleNumberPlateText(veh)
+            local damage = getVehicleDamage(veh)
+            if damage then
                 vehicleStates[plate] = vehicleStates[plate] or { startAttempts = 0 }
-                vehicleStates[plate].startAttempts = vehicleStates[plate].startAttempts + 1
                 
+                -- Check if start should succeed
                 if not attemptVehicleStart(veh, damage) then
-                    -- Failed to start - prevent default start
+                    print('[DAMAGE DEBUG] Forcing engine off') -- Debug
+                    -- Failed to start - force engine off
                     SetVehicleEngineOn(veh, false, true, true)
+                    
+                    vehicleStates[plate].startAttempts = vehicleStates[plate].startAttempts + 1
                     
                     if vehicleStates[plate].startAttempts >= DamageConfig.starting.attempts_max then
                         QBCore.Functions.Notify('🔋 Battery drained from failed starts!', 'error', 4000)
@@ -306,6 +322,8 @@ CreateThread(function()
                 end
             end
         end
+        
+        lastEngineState[plate] = isEngineOn
         
         ::continue::
     end
@@ -536,6 +554,15 @@ CreateThread(function()
         local damage = getVehicleDamage(veh)
         if not damage then goto continue end
         
+        -- Debug output
+        local batteryHealth = 100 - (tonumber(damage.carbattery) or 0)
+        local oilHealth = 100 - (tonumber(damage.oil) or 0)
+        print(string.format('[DAMAGE DEBUG] Battery: %d%% | Oil: %d%% | Sparkplugs: %d%%', 
+            batteryHealth, 
+            oilHealth, 
+            100 - (tonumber(damage.sparkplugs) or 0)
+        ))
+        
         -- Calculate environmental multiplier
         local envMultiplier = calculateEnvironmentalMultiplier(veh)
         
@@ -544,6 +571,7 @@ CreateThread(function()
         local inMud = isInMud(veh)
         
         if waterDepth > 0.1 or inMud then
+            print('[DAMAGE DEBUG] Environmental damage active! Multiplier:', envMultiplier)
             -- Oil gets dirty faster in water/mud
             damage.oil = math.min(100, (tonumber(damage.oil) or 0) + (0.3 * envMultiplier))
             damage.oil_filter = math.min(100, (tonumber(damage.oil_filter) or 0) + (0.25 * envMultiplier))
@@ -621,4 +649,46 @@ RegisterCommand('checkenv', function()
     local batteryHealth = 100 - (tonumber(damage.carbattery) or 0)
     local oilHealth = 100 - (tonumber(damage.oil) or 0)
     QBCore.Functions.Notify(string.format('Battery: %d%% | Oil: %d%% | Water: %.2fm', batteryHealth, oilHealth, waterDepth), 'info', 5000)
+end, false)
+
+-- NEW: Command to damage battery for testing
+RegisterCommand('damagebattery', function(source, args)
+    local ped = PlayerPedId()
+    if not IsPedInAnyVehicle(ped, false) then 
+        QBCore.Functions.Notify('Not in a vehicle', 'error')
+        return 
+    end
+    
+    local veh = GetVehiclePedIsIn(ped, false)
+    local damage = getVehicleDamage(veh) or {}
+    
+    local amount = tonumber(args[1]) or 40
+    damage.carbattery = math.min(100, (damage.carbattery or 0) + amount)
+    
+    applyDamage(veh, damage)
+    
+    local batteryHealth = 100 - damage.carbattery
+    QBCore.Functions.Notify(string.format('Battery damaged to %d%%', batteryHealth), 'success')
+    print('[DAMAGE] Battery health now:', batteryHealth, '%')
+end, false)
+
+-- NEW: Command to damage sparkplugs for testing
+RegisterCommand('damageplugs', function(source, args)
+    local ped = PlayerPedId()
+    if not IsPedInAnyVehicle(ped, false) then 
+        QBCore.Functions.Notify('Not in a vehicle', 'error')
+        return 
+    end
+    
+    local veh = GetVehiclePedIsIn(ped, false)
+    local damage = getVehicleDamage(veh) or {}
+    
+    local amount = tonumber(args[1]) or 40
+    damage.sparkplugs = math.min(100, (damage.sparkplugs or 0) + amount)
+    
+    applyDamage(veh, damage)
+    
+    local sparkplugHealth = 100 - damage.sparkplugs
+    QBCore.Functions.Notify(string.format('Spark plugs damaged to %d%%', sparkplugHealth), 'success')
+    print('[DAMAGE] Sparkplug health now:', sparkplugHealth, '%')
 end, false)
