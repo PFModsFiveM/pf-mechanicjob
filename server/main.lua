@@ -645,7 +645,7 @@ local function RegisterItems()
     }
     
     local wheelItems = {
-        'rims'  -- changed from wheel_kit to rims
+        'rims'
     }
     
     -- Register cosmetic items
@@ -668,6 +668,11 @@ local function RegisterItems()
             TriggerClientEvent('pf-mechanicjob:client:useWheels', source, item)
         end)
     end
+    
+    -- Register mechanic_tools
+    QBCore.Functions.CreateUseableItem('mechanic_tools', function(source, itemInfo)
+        TriggerClientEvent('pf-mechanicjob:client:useMechanicTools', source)
+    end)
 end
 
 AddEventHandler('onResourceStart', function(resourceName)

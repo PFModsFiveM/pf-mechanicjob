@@ -390,10 +390,12 @@ local function partsNeededForRepair(partKey, healthPercent)
 end
 
 local DiagnosticLabels = {
+    alternator = "Alternator",
     sparkplugs = "Spark Plugs",
     carbattery = "Car Battery",
     engine_oil = "Engine Oil",
     oil_filter = "Oil Filter",
+    brakes = "Brake Pads",      -- NEW
     susp_arm = "Suspension Arm",
     axleparts = "Axle Parts",
     engine_part = "Engine Part",
@@ -751,10 +753,12 @@ RegisterNetEvent('pf-mechanicjob:client:useMechanicTools', function()
 
     -- compute per-part health% (health = 100 - damage) with safety
     local health = {}
+    health.alternator = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.alternator) or 0))))
     health.sparkplugs = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.sparkplugs) or 0))))
     health.carbattery = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.carbattery) or 0))))
     health.engine_oil = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.oil) or 0))))
     health.oil_filter = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.oil_filter) or 0))))
+    health.brakes = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.brakes) or 0))))  -- NEW
     health.susp_arm = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.suspension) or 0))))
     health.axleparts = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.axle) or 0))))
     health.engine_overall = engineHealthPct
@@ -786,11 +790,17 @@ RegisterNetEvent('pf-mechanicjob:client:useMechanicTools', function()
     addPartEntry('engine_part', 'Engine (overall)', health.engine_overall)
     addPartEntry('body_part',   'Body (overall)',   health.body_overall)
 
-    -- Individual engine components
-    addPartEntry('sparkplugs',  DiagnosticLabels.sparkplugs or 'Spark Plugs', health.sparkplugs)
+    -- Electrical System
+    addPartEntry('alternator',  DiagnosticLabels.alternator or 'Alternator', health.alternator)
     addPartEntry('carbattery',  DiagnosticLabels.carbattery or 'Car Battery', health.carbattery)
+
+    -- Engine Components
+    addPartEntry('sparkplugs',  DiagnosticLabels.sparkplugs or 'Spark Plugs', health.sparkplugs)
     addPartEntry('engine_oil',  DiagnosticLabels.engine_oil or 'Engine Oil', health.engine_oil)
     addPartEntry('oil_filter',  DiagnosticLabels.oil_filter or 'Oil Filter', health.oil_filter)
+
+    -- Braking System - NEW
+    addPartEntry('brakes',      DiagnosticLabels.brakes or 'Brake Pads', health.brakes)
 
     -- Suspension / Axle
     addPartEntry('susp_arm',    DiagnosticLabels.susp_arm or 'Suspension Arm', health.susp_arm)

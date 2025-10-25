@@ -8,21 +8,39 @@ local DamageConfig = {
     
     -- Base damage rates (% per check interval)
     damageRates = {
+        alternator = 0.03,
         sparkplugs = 0.08,
         carbattery = 0.04,
         oil = 0.06,
         oil_filter = 0.05,
+        brakes = 0.05,         -- NEW: Brakes
         suspension = 0.04,
         axle = 0.03
     },
     
     -- Starting thresholds
     starting = {
-        battery_hard_start = 50,    -- Below 50% = hard start
-        battery_may_fail = 30,      -- Below 30% = may not start
-        battery_power_cut = 30,     -- Below 30% = random power cuts
-        sparkplug_misfire = 40,     -- Below 40% = misfires
-        attempts_max = 5            -- Max starting attempts before fail
+        battery_hard_start = 50,
+        battery_may_fail = 30,
+        battery_power_cut = 30,
+        sparkplug_misfire = 40,
+        alternator_stutter = 60,
+        attempts_max = 5
+    },
+    
+    -- Brake degradation
+    brakes = {
+        fade_threshold = 60,     -- Below 60% = reduced braking
+        critical_threshold = 30, -- Below 30% = severe brake fade
+        max_power_loss = 0.6     -- Up to 60% brake power loss
+    },
+    
+    -- Alternator stuttering
+    alternator = {
+        stutter_interval = 300000,  -- 5 minutes between stutters
+        damage_per_stutter = 10,    -- 10% damage per stutter event
+        base_stutter_duration = 2000, -- 2 seconds at 60%
+        max_stutter_duration = 15000  -- 15 seconds at 0%
     },
     
     -- Environmental damage multipliers
@@ -42,6 +60,9 @@ local DamageConfig = {
 local vehicleStates = {}
 local lastWarnings = {}
 local lastEnvironmentalWarning = 0
+local batteryDeadNotified = {}
+local lastAlternatorStutter = {}
+local lastBrakeWarning = {} -- NEW: Track brake warnings
 
 -- Offroad vehicle classes (get less environmental damage)
 local OffroadVehicleClasses = {
@@ -132,10 +153,12 @@ local function getVehicleDamage(veh)
     
     local damage = state.state.partDamage or {}
     
+    damage.alternator = damage.alternator or 0
     damage.sparkplugs = damage.sparkplugs or 0
     damage.carbattery = damage.carbattery or 0
     damage.oil = damage.oil or 0
     damage.oil_filter = damage.oil_filter or 0
+    damage.brakes = damage.brakes or 0  -- NEW
     damage.suspension = damage.suspension or 0
     damage.axle = damage.axle or 0
     
@@ -152,18 +175,26 @@ local function applyDamage(veh, damage)
     state.state:set('partDamage', damage, true)
 end
 
--- NEW: Handle vehicle starting with battery/sparkplug failures
+-- NEW: Handle vehicle starting with battery/sparkplug/alternator failures
 local function attemptVehicleStart(veh, damage)
     local batteryHealth = 100 - (tonumber(damage.carbattery) or 0)
     local sparkplugHealth = 100 - (tonumber(damage.sparkplugs) or 0)
+    local alternatorHealth = 100 - (tonumber(damage.alternator) or 0)
     
-    print('[DAMAGE DEBUG] Attempting start - Battery:', batteryHealth, '% Sparkplugs:', sparkplugHealth, '%') -- Debug
+    print('[DAMAGE DEBUG] Attempting start - Battery:', batteryHealth, '% Sparkplugs:', sparkplugHealth, '% Alternator:', alternatorHealth, '%')
     
-    -- Dead battery = no start
+    local plate = GetVehicleNumberPlateText(veh) or 'UNKNOWN'
+    
+    -- Dead battery = no start (only notify once)
     if batteryHealth <= 0 then
-        QBCore.Functions.Notify('🔋 Battery is completely dead!', 'error', 3000)
+        if not batteryDeadNotified[plate] then
+            QBCore.Functions.Notify('🔋 Battery is completely dead! Needs replacement.', 'error', 5000)
+            batteryDeadNotified[plate] = true
+        end
         SetVehicleEngineOn(veh, false, true, true)
         return false
+    else
+        batteryDeadNotified[plate] = nil -- Reset notification flag when battery is alive
     end
     
     -- Dead sparkplugs = no start
@@ -173,16 +204,14 @@ local function attemptVehicleStart(veh, damage)
         return false
     end
     
-    -- Calculate start chance based on battery & sparkplugs
+    -- Calculate start chance based on battery, sparkplugs & alternator
     local startChance = 100
     
     -- Battery affects starting
     if batteryHealth < DamageConfig.starting.battery_hard_start then
         if batteryHealth < DamageConfig.starting.battery_may_fail then
-            -- Below 30% = 30-70% chance to start
             startChance = math.max(20, batteryHealth * 2)
         else
-            -- 30-50% = harder starting but will eventually work
             startChance = 70 + (batteryHealth - 30) * 1.5
         end
     end
@@ -192,13 +221,17 @@ local function attemptVehicleStart(veh, damage)
         startChance = startChance * (sparkplugHealth / 100)
     end
     
-    print('[DAMAGE DEBUG] Start chance:', startChance, '%') -- Debug
+    -- Bad alternator makes starting harder (drains battery faster)
+    if alternatorHealth < 50 then
+        startChance = startChance * (alternatorHealth / 100)
+    end
+    
+    print('[DAMAGE DEBUG] Start chance:', startChance, '%')
     
     local roll = math.random(1, 100)
     local started = roll <= startChance
     
     if not started then
-        -- Failed start damages battery slightly
         damage.carbattery = math.min(100, (damage.carbattery or 0) + 1)
         applyDamage(veh, damage)
         
@@ -207,16 +240,161 @@ local function attemptVehicleStart(veh, damage)
         else
             QBCore.Functions.Notify('⚡ Engine misfired', 'error', 2000)
         end
-        print('[DAMAGE DEBUG] Start FAILED (rolled', roll, 'needed <=', startChance, ')') -- Debug
+        print('[DAMAGE DEBUG] Start FAILED (rolled', roll, 'needed <=', startChance, ')')
     else
         if batteryHealth < 50 then
             QBCore.Functions.Notify('🔋 Engine started (battery weak)', 'warning', 2000)
         end
-        print('[DAMAGE DEBUG] Start SUCCESS') -- Debug
+        if alternatorHealth < 40 then
+            QBCore.Functions.Notify('⚡ Charging system fault detected', 'warning', 3000)
+        end
+        print('[DAMAGE DEBUG] Start SUCCESS')
     end
     
     return started
 end
+
+-- Helper: Calculate environmental damage multiplier (MOVE THIS UP)
+local function calculateEnvironmentalMultiplier(veh)
+    if not veh or not DoesEntityExist(veh) then return 1.0 end
+    
+    local multiplier = 1.0
+    local speed = GetEntitySpeed(veh) * 2.236936 -- MPH
+    
+    -- Check water depth
+    local waterDepth = getWaterDepth(veh)
+    local inMud = isInMud(veh)
+    
+    if waterDepth > 0.1 or inMud then
+        local isOffroad = isOffroadVehicle(veh)
+        local hasSnork = hasSnorkel(veh)
+        
+        -- Base environmental damage
+        multiplier = DamageConfig.environmental.mud_multiplier
+        
+        -- Offroad vehicles handle it better
+        if isOffroad then
+            multiplier = multiplier * DamageConfig.environmental.offroad_protection
+        end
+        
+        -- Deep water without snorkel = disaster
+        if waterDepth > DamageConfig.environmental.water_depth_critical and not hasSnork then
+            multiplier = multiplier * DamageConfig.environmental.no_snorkel_penalty
+            
+            -- Chance of immediate stall
+            if math.random(100) < 15 then
+                SetVehicleEngineOn(veh, false, true, true)
+                SetVehicleUndriveable(veh, true)
+                Wait(3000)
+                SetVehicleUndriveable(veh, false)
+            end
+        end
+        
+        -- Moving fast through water/mud = worse
+        if speed > 30 then
+            multiplier = multiplier * 1.5
+        end
+    end
+    
+    return multiplier
+end
+
+-- REPLACE: Alternator stuttering system with dynamic intervals
+CreateThread(function()
+    while true do
+        Wait(1000) -- Check every second
+        
+        if not DamageConfig.enabled then goto skip end
+        
+        local ped = PlayerPedId()
+        if not IsPedInAnyVehicle(ped, false) then goto skip end
+        
+        local veh = GetVehiclePedIsIn(ped, false)
+        if not veh or veh == 0 then goto skip end
+        
+        local driver = GetPedInVehicleSeat(veh, -1)
+        if driver ~= ped then goto skip end
+        
+        if not GetIsVehicleEngineRunning(veh) then goto skip end
+        
+        local damage = getVehicleDamage(veh)
+        if not damage then goto skip end
+        
+        local plate = GetVehicleNumberPlateText(veh)
+        local alternatorHealth = 100 - (tonumber(damage.alternator) or 0)
+        
+        -- Check if alternator should stutter
+        if alternatorHealth < DamageConfig.starting.alternator_stutter then
+            local now = GetGameTimer()
+            lastAlternatorStutter[plate] = lastAlternatorStutter[plate] or 0
+            
+            -- Calculate dynamic stutter interval based on health
+            -- 60% = 5 minutes, 30% = 2.5 minutes, 0% = 30 seconds
+            local healthRatio = alternatorHealth / 60 -- 0-1 scale (60% to 0%)
+            local minInterval = 30000 -- 30 seconds minimum
+            local maxInterval = 300000 -- 5 minutes maximum
+            local dynamicInterval = minInterval + (healthRatio * (maxInterval - minInterval))
+            
+            print(string.format('[DAMAGE DEBUG] Alternator health: %d%% | Next stutter in: %.1f seconds', 
+                alternatorHealth, 
+                (dynamicInterval - (now - lastAlternatorStutter[plate])) / 1000
+            ))
+            
+            -- Time for next stutter?
+            if (now - lastAlternatorStutter[plate]) >= dynamicInterval then
+                print('[DAMAGE DEBUG] Alternator stutter starting!')
+                
+                -- Calculate stutter duration based on damage
+                local stutterPercent = (60 - alternatorHealth) / 60 -- 0-1 scale
+                local stutterDuration = DamageConfig.alternator.base_stutter_duration + 
+                    (stutterPercent * (DamageConfig.alternator.max_stutter_duration - DamageConfig.alternator.base_stutter_duration))
+                
+                QBCore.Functions.Notify('⚡ Alternator failing! Electrical issues!', 'error', 4000)
+                
+                -- Stutter effect: rapid on/off
+                local stutterEnd = now + stutterDuration
+                CreateThread(function()
+                    while GetGameTimer() < stutterEnd do
+                        if not DoesEntityExist(veh) then break end
+                        
+                        -- Turn off
+                        SetVehicleEngineOn(veh, false, false, false)
+                        SetVehicleLights(veh, 1) -- Force lights off
+                        Wait(math.random(200, 500))
+                        
+                        -- Turn on
+                        SetVehicleEngineOn(veh, true, false, false)
+                        SetVehicleLights(veh, 0) -- Normal lights
+                        Wait(math.random(300, 700))
+                    end
+                    
+                    -- Ensure engine is on after stutter
+                    if DoesEntityExist(veh) then
+                        SetVehicleEngineOn(veh, true, false, false)
+                    end
+                end)
+                
+                -- Damage alternator further from stuttering
+                damage.alternator = math.min(100, (damage.alternator or 0) + DamageConfig.alternator.damage_per_stutter)
+                
+                -- Stuttering also drains battery
+                damage.carbattery = math.min(100, (damage.carbattery or 0) + 2)
+                
+                applyDamage(veh, damage)
+                
+                lastAlternatorStutter[plate] = now
+                
+                print(string.format('[DAMAGE DEBUG] Alternator stuttered for %dms. Health now: %d%%. Next stutter in: %.1f seconds', 
+                    math.floor(stutterDuration), 
+                    100 - damage.alternator,
+                    dynamicInterval / 1000
+                ))
+            end
+        end
+        
+        ::skip::
+    end
+end)
 
 -- NEW: Monitor power cuts while driving
 CreateThread(function()
@@ -329,51 +507,6 @@ CreateThread(function()
     end
 end)
 
--- Helper: Calculate environmental damage multiplier
-local function calculateEnvironmentalMultiplier(veh)
-    if not veh or not DoesEntityExist(veh) then return 1.0 end
-    
-    local multiplier = 1.0
-    local speed = GetEntitySpeed(veh) * 2.236936 -- MPH
-    
-    -- Check water depth
-    local waterDepth = getWaterDepth(veh)
-    local inMud = isInMud(veh)
-    
-    if waterDepth > 0.1 or inMud then
-        local isOffroad = isOffroadVehicle(veh)
-        local hasSnork = hasSnorkel(veh)
-        
-        -- Base environmental damage
-        multiplier = DamageConfig.environmental.mud_multiplier
-        
-        -- Offroad vehicles handle it better
-        if isOffroad then
-            multiplier = multiplier * DamageConfig.environmental.offroad_protection
-        end
-        
-        -- Deep water without snorkel = disaster
-        if waterDepth > DamageConfig.environmental.water_depth_critical and not hasSnork then
-            multiplier = multiplier * DamageConfig.environmental.no_snorkel_penalty
-            
-            -- Chance of immediate stall
-            if math.random(100) < 15 then
-                SetVehicleEngineOn(veh, false, true, true)
-                SetVehicleUndriveable(veh, true)
-                Wait(3000)
-                SetVehicleUndriveable(veh, false)
-            end
-        end
-        
-        -- Moving fast through water/mud = worse
-        if speed > 30 then
-            multiplier = multiplier * 1.5
-        end
-    end
-    
-    return multiplier
-end
-
 -- Helper: Calculate driving condition damage multiplier
 local function calculateDrivingMultiplier(veh, partKey)
     if not veh or not DoesEntityExist(veh) then return 1.0 end
@@ -382,42 +515,109 @@ local function calculateDrivingMultiplier(veh, partKey)
     local rpm = GetVehicleCurrentRpm(veh)
     local multiplier = 1.0
     
-    if partKey == 'sparkplugs' then
-        if speed > 100 then
-            multiplier = 2.0
-        elseif rpm > 0.9 then
+    if partKey == 'alternator' then
+        if speed > 80 or rpm > 0.85 then
             multiplier = 1.5
         end
         
+    elseif partKey == 'sparkplugs' then
+        if speed > 100 then multiplier = 2.0
+        elseif rpm > 0.9 then multiplier = 1.5 end
+        
     elseif partKey == 'carbattery' then
+        local damage = getVehicleDamage(veh)
+        if damage then
+            local alternatorHealth = 100 - (tonumber(damage.alternator) or 0)
+            if alternatorHealth < 50 then
+                multiplier = 2.0
+            end
+        end
         if GetIsVehicleEngineRunning(veh) then
-            multiplier = 1.0
+            multiplier = multiplier * 1.0
         else
-            multiplier = 1.5
+            multiplier = multiplier * 1.5
+        end
+        
+    elseif partKey == 'brakes' then
+        -- NEW: Brake wear based on usage
+        local isBraking = IsControlPressed(0, 72) -- Brake key
+        
+        if isBraking then
+            -- Heavy braking at high speed = more wear
+            if speed > 60 then
+                multiplier = 3.0
+            elseif speed > 30 then
+                multiplier = 2.0
+            else
+                multiplier = 1.5
+            end
+            
+            -- Hard braking (full pressure) = extra wear
+            local brakeValue = GetControlValue(0, 72)
+            if brakeValue > 200 then
+                multiplier = multiplier * 1.5
+            end
+        else
+            multiplier = 0.1 -- Minimal wear when not braking
         end
         
     elseif partKey == 'oil' or partKey == 'oil_filter' then
-        if speed > 80 then
-            multiplier = 1.8
-        end
+        if speed > 80 then multiplier = 1.8 end
         
     elseif partKey == 'suspension' then
-        if not IsVehicleOnAllWheels(veh) then
-            multiplier = 3.0
-        elseif speed > 60 then
-            multiplier = 1.5
-        end
+        if not IsVehicleOnAllWheels(veh) then multiplier = 3.0
+        elseif speed > 60 then multiplier = 1.5 end
         
     elseif partKey == 'axle' then
-        if HasEntityCollidedWithAnything(veh) then
-            multiplier = 5.0
-        elseif speed > 70 then
-            multiplier = 1.3
-        end
+        if HasEntityCollidedWithAnything(veh) then multiplier = 5.0
+        elseif speed > 70 then multiplier = 1.3 end
     end
     
     return multiplier
 end
+
+-- REPLACE the brake force thread completely
+CreateThread(function()
+    while true do
+        Wait(0)
+
+        if not DamageConfig.enabled then goto next end
+
+        local ped = PlayerPedId()
+        if not IsPedInAnyVehicle(ped, false) then goto next end
+
+        local veh = GetVehiclePedIsIn(ped, false)
+        if veh == 0 or not DoesEntityExist(veh) then goto next end
+
+        local driver = GetPedInVehicleSeat(veh, -1)
+        if driver ~= ped then goto next end
+
+        local dmg = getVehicleDamage(veh)
+        if not dmg then goto next end
+
+        local brakeHealth = math.max(0, math.min(100, 100 - (tonumber(dmg.brakes) or 0)))
+
+        -- Disable S key (brake/reverse) when brakes are at 0%
+        if brakeHealth <= 0 then
+            DisableControlAction(0, 72, true) -- INPUT_VEH_BRAKE
+        end
+
+        -- Apply brake force reduction based on health (linear 1:1 mapping)
+        -- 100% health = 100% brake force
+        -- 90% health = 90% brake force
+        -- 0% health = 0% brake force
+        local brakeMultiplier = brakeHealth / 100.0
+        
+        -- Get base brake force and apply multiplier
+        local baseBrakeForce = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce')
+        if baseBrakeForce and baseBrakeForce > 0 then
+            local modifiedBrakeForce = baseBrakeForce * brakeMultiplier
+            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce', modifiedBrakeForce)
+        end
+
+        ::next::
+    end
+end)
 
 -- NEW: Enhanced damage effects with oil-related engine damage
 local function applyDamageEffects(veh, damage)
@@ -479,6 +679,8 @@ local function applyDamageEffects(veh, damage)
     if filterDmg > 60 then
         damage.oil = math.min(100, (damage.oil or 0) + 0.2)
     end
+    
+    -- Note: Brakes are handled in dedicated thread
 end
 
 -- Helper: Show environmental warnings
@@ -512,10 +714,12 @@ local function checkComponentWarnings(veh, damage)
     lastWarnings[plate] = lastWarnings[plate] or {}
     
     local partNames = {
+        alternator = 'Alternator',
         sparkplugs = 'Spark Plugs',
         carbattery = 'Battery',
         oil = 'Engine Oil',
         oil_filter = 'Oil Filter',
+        brakes = 'Brake Pads',  -- NEW
         suspension = 'Suspension',
         axle = 'Axle'
     }
@@ -554,34 +758,42 @@ CreateThread(function()
         local damage = getVehicleDamage(veh)
         if not damage then goto continue end
         
-        -- Debug output
-        local batteryHealth = 100 - (tonumber(damage.carbattery) or 0)
-        local oilHealth = 100 - (tonumber(damage.oil) or 0)
-        print(string.format('[DAMAGE DEBUG] Battery: %d%% | Oil: %d%% | Sparkplugs: %d%%', 
-            batteryHealth, 
+        -- Debug output (FIX: ensure all values are numbers)
+        local alternatorHealth = math.floor(100 - (tonumber(damage.alternator) or 0))
+        local batteryHealth = math.floor(100 - (tonumber(damage.carbattery) or 0))
+        local brakeHealth = math.floor(100 - (tonumber(damage.brakes) or 0))
+        local oilHealth = math.floor(100 - (tonumber(damage.oil) or 0))
+        local plugHealth = math.floor(100 - (tonumber(damage.sparkplugs) or 0))
+        
+        print(string.format('[DAMAGE DEBUG] Alt: %d%% | Bat: %d%% | Brakes: %d%% | Oil: %d%% | Plugs: %d%%', 
+            alternatorHealth,
+            batteryHealth,
+            brakeHealth,
             oilHealth, 
-            100 - (tonumber(damage.sparkplugs) or 0)
+            plugHealth
         ))
         
-        -- Calculate environmental multiplier
-        local envMultiplier = calculateEnvironmentalMultiplier(veh)
+        -- Calculate brake multiplier for debug
+        if brakeHealth < DamageConfig.brakes.fade_threshold then
+            local healthRatio = brakeHealth / 100
+            local minPower = 1.0 - DamageConfig.brakes.max_power_loss
+            local brakeMultiplier = math.max(minPower, minPower + (healthRatio * DamageConfig.brakes.max_power_loss))
+            print(string.format('[BRAKE DEBUG] Brake power: %.0f%% (Health: %d%%)', brakeMultiplier * 100, brakeHealth))
+        end
         
-        -- Apply environmental-specific damage
+        local envMultiplier = calculateEnvironmentalMultiplier(veh)
         local waterDepth = getWaterDepth(veh)
         local inMud = isInMud(veh)
         
         if waterDepth > 0.1 or inMud then
-            print('[DAMAGE DEBUG] Environmental damage active! Multiplier:', envMultiplier)
-            -- Oil gets dirty faster in water/mud
+            print(string.format('[DAMAGE DEBUG] Environmental damage active! Multiplier: %.2f', envMultiplier))
             damage.oil = math.min(100, (tonumber(damage.oil) or 0) + (0.3 * envMultiplier))
             damage.oil_filter = math.min(100, (tonumber(damage.oil_filter) or 0) + (0.25 * envMultiplier))
             
-            -- Battery shorts in water
             if waterDepth > 0.3 then
                 damage.carbattery = math.min(100, (tonumber(damage.carbattery) or 0) + (0.4 * envMultiplier))
             end
             
-            -- Suspension/axle damage from rough terrain
             if inMud then
                 damage.suspension = math.min(100, (tonumber(damage.suspension) or 0) + (0.2 * envMultiplier))
                 damage.axle = math.min(100, (tonumber(damage.axle) or 0) + (0.15 * envMultiplier))
@@ -597,7 +809,6 @@ CreateThread(function()
             damage[part] = math.min(100, (tonumber(damage[part]) or 0) + newDamage)
         end
         
-        -- Apply changes
         applyDamage(veh, damage)
         applyDamageEffects(veh, damage)
         checkEnvironmentalWarnings(veh, envMultiplier)
@@ -622,10 +833,12 @@ RegisterCommand('resetdamage', function()
     
     local veh = GetVehiclePedIsIn(ped, false)
     local damage = {
+        alternator = 0,
         sparkplugs = 0,
         carbattery = 0,
         oil = 0,
         oil_filter = 0,
+        brakes = 0,  -- NEW
         suspension = 0,
         axle = 0
     }
@@ -634,6 +847,13 @@ RegisterCommand('resetdamage', function()
     SetVehicleEngineHealth(veh, 1000.0)
     SetVehicleBodyHealth(veh, 1000.0)
     SetVehicleFixed(veh)
+    
+    -- Reset notification flags
+    local plate = GetVehicleNumberPlateText(veh)
+    batteryDeadNotified[plate] = nil
+    lastAlternatorStutter[plate] = nil
+    lastBrakeWarning[plate] = nil  -- NEW
+    
     QBCore.Functions.Notify('All damage reset', 'success')
 end, false)
 
@@ -691,4 +911,60 @@ RegisterCommand('damageplugs', function(source, args)
     local sparkplugHealth = 100 - damage.sparkplugs
     QBCore.Functions.Notify(string.format('Spark plugs damaged to %d%%', sparkplugHealth), 'success')
     print('[DAMAGE] Sparkplug health now:', sparkplugHealth, '%')
+end, false)
+
+-- NEW: Command to damage alternator for testing
+RegisterCommand('damagealternator', function(source, args)
+    local ped = PlayerPedId()
+    if not IsPedInAnyVehicle(ped, false) then 
+        QBCore.Functions.Notify('Not in a vehicle', 'error')
+        return 
+    end
+    
+    local veh = GetVehiclePedIsIn(ped, false)
+    local damage = getVehicleDamage(veh) or {}
+    
+    local amount = tonumber(args[1]) or 40
+    damage.alternator = math.min(100, (damage.alternator or 0) + amount)
+    
+    applyDamage(veh, damage)
+    
+    -- Reset stutter timer so it stutters immediately for testing
+    local plate = GetVehicleNumberPlateText(veh)
+    lastAlternatorStutter[plate] = 0
+    
+    local alternatorHealth = 100 - damage.alternator
+    QBCore.Functions.Notify(string.format('Alternator damaged to %d%%', alternatorHealth), 'success')
+    print('[DAMAGE] Alternator health now:', alternatorHealth, '%')
+end, false)
+
+-- NEW: Command to damage brakes for testing
+RegisterCommand('damagebrakes', function(source, args)
+    local ped = PlayerPedId()
+    if not IsPedInAnyVehicle(ped, false) then 
+        QBCore.Functions.Notify('Not in a vehicle', 'error')
+        return 
+    end
+
+    local veh = GetVehiclePedIsIn(ped, false)
+    local damage = getVehicleDamage(veh) or {}
+
+    local amount = tonumber(args[1]) or 40
+    damage.brakes = math.min(100, (tonumber(damage.brakes) or 0) + amount)
+
+    applyDamage(veh, damage)
+
+    local brakeHealth = math.floor(100 - (tonumber(damage.brakes) or 0))
+    local brakePower = brakeHealth -- 1:1 mapping
+
+    QBCore.Functions.Notify(string.format('Brakes damaged to %d%% (%d%% brake power)', brakeHealth, brakePower), 'success')
+    print(('[DAMAGE] Brake health: %d%% | Brake power: %d%%'):format(brakeHealth, brakePower))
+
+    if brakeHealth <= 0 then
+        QBCore.Functions.Notify('🛑 TOTAL BRAKE FAILURE! S key disabled! Use handbrake/crashes to stop!', 'error', 6000)
+    elseif brakeHealth < 30 then
+        QBCore.Functions.Notify('🛑 CRITICAL: Only 30% braking power!', 'error', 5000)
+    elseif brakeHealth < 60 then
+        QBCore.Functions.Notify('⚠️ Reduced braking power', 'warning', 3000)
+    end
 end, false)
