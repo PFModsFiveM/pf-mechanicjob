@@ -597,9 +597,18 @@ CreateThread(function()
 
         local brakeHealth = math.max(0, math.min(100, 100 - (tonumber(dmg.brakes) or 0)))
 
-        -- Disable S key (brake/reverse) when brakes are at 0%
+        -- At 0% brakes: disable S key only when moving forward, allow when stopped/reversing
         if brakeHealth <= 0 then
-            DisableControlAction(0, 72, true) -- INPUT_VEH_BRAKE
+            local vel = GetEntityVelocity(veh)
+            local fwd = GetEntityForwardVector(veh)
+            local fwdSpeed = vel.x*fwd.x + vel.y*fwd.y + vel.z*fwd.z
+            local speed = math.sqrt(vel.x*vel.x + vel.y*vel.y + vel.z*vel.z)
+            
+            -- Only disable S key when moving forward at reasonable speed
+            if fwdSpeed > 0.5 and speed > 0.5 then
+                DisableControlAction(0, 72, true) -- Disable brake when moving forward
+            end
+            -- When stopped (speed < 0.5) or reversing (fwdSpeed < 0), S key works for reverse
         end
 
         -- Apply brake force reduction based on health (linear 1:1 mapping)
@@ -613,6 +622,13 @@ CreateThread(function()
         if baseBrakeForce and baseBrakeForce > 0 then
             local modifiedBrakeForce = baseBrakeForce * brakeMultiplier
             SetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce', modifiedBrakeForce)
+        end
+
+        -- Apply handbrake force reduction based on brake health (same logic as above)
+        local baseHandBrakeForce = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce')
+        if baseHandBrakeForce and baseHandBrakeForce > 0 then
+            local modifiedHandBrakeForce = baseHandBrakeForce * brakeMultiplier
+            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce', modifiedHandBrakeForce)
         end
 
         ::next::
@@ -961,10 +977,129 @@ RegisterCommand('damagebrakes', function(source, args)
     print(('[DAMAGE] Brake health: %d%% | Brake power: %d%%'):format(brakeHealth, brakePower))
 
     if brakeHealth <= 0 then
-        QBCore.Functions.Notify('🛑 TOTAL BRAKE FAILURE! S key disabled! Use handbrake/crashes to stop!', 'error', 6000)
+        QBCore.Functions.Notify('🛑 TOTAL BRAKE FAILURE! Cannot brake while moving! Reverse works when stopped.', 'error', 6000)
     elseif brakeHealth < 30 then
         QBCore.Functions.Notify('🛑 CRITICAL: Only 30% braking power!', 'error', 5000)
     elseif brakeHealth < 60 then
         QBCore.Functions.Notify('⚠️ Reduced braking power', 'warning', 3000)
     end
+end, false)
+
+-- helper: get usable vehicle (in or near player)
+local function getRepairVehicle()
+    local ped = PlayerPedId()
+    if IsPedInAnyVehicle(ped, false) then
+        local veh = GetVehiclePedIsIn(ped, false)
+        if veh ~= 0 and DoesEntityExist(veh) then return veh end
+    end
+    local coords = GetEntityCoords(ped)
+    local veh = GetClosestVehicle(coords.x, coords.y, coords.z, 6.0, 0, 70)
+    if veh ~= 0 and DoesEntityExist(veh) then return veh end
+    return nil
+end
+
+-- helper: request control before mutating entity state
+local function ensureControl(entity, timeoutMs)
+    if not entity or entity == 0 then return false end
+    local start = GetGameTimer()
+    while not NetworkHasControlOfEntity(entity) and (GetGameTimer() - start) < (timeoutMs or 700) do
+        NetworkRequestControlOfEntity(entity)
+        Wait(0)
+    end
+    return NetworkHasControlOfEntity(entity)
+end
+
+-- calculate brake pads needed based on current damage (1 per 25%, max 4)
+local function calcPadsNeeded(brakeDmg)
+    if brakeDmg >= 100 then return 4 end
+    local pads = math.ceil((brakeDmg > 0 and brakeDmg or 0) / 25)
+    return math.max(1, math.min(4, pads))
+end
+
+-- count available brake pads in inventory
+local function countBrakePads()
+    local total = 0
+    if QBCore.Functions.GetPlayerData then
+        local items = (QBCore.Functions.GetPlayerData().items or {})
+        for _, it in pairs(items) do
+            if it and it.name == 'brake_pads' then
+                total = total + (it.amount or 1)
+            end
+        end
+    end
+    return total
+end
+
+-- play a short mechanic action (like battery/body)
+local function doMechanicAction(label, ms)
+    if QBCore.Functions.Progressbar then
+        QBCore.Functions.Progressbar('pf_brake_repair', label or 'Working...', ms or 2000, false, true, {
+            disableMovement = true, disableCarMovement = true, disableMouse = false, disableCombat = true,
+        }, {
+            animDict = 'mini@repair', anim = 'fixing_a_ped', flags = 49,
+        }, {}, {}, function() end, function() end)
+    else
+        -- fallback wait if no progressbar
+        Wait(ms or 2000)
+    end
+end
+
+-- toolbox-style event: apply same flow used by battery/body (server-driven)
+RegisterNetEvent('pf-mechanicjob:client:repair:brakes', function()
+    local ped = PlayerPedId()
+    local veh = IsPedInAnyVehicle(ped, false) and GetVehiclePedIsIn(ped, false) or (function()
+        local c = GetEntityCoords(ped)
+        local v = GetClosestVehicle(c.x, c.y, c.z, 6.0, 0, 70)
+        return (v ~= 0 and DoesEntityExist(v)) and v or nil
+    end)()
+    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
+
+    local damage = getVehicleDamage(veh)
+    if not damage then QBCore.Functions.Notify('Cannot read brake condition.', 'error'); return end
+    local brakeDmg = tonumber(damage.brakes) or 0
+    if brakeDmg <= 0 then QBCore.Functions.Notify('Brakes are already in perfect condition.', 'success'); return end
+
+    local vehNet = NetworkGetNetworkIdFromEntity(veh)
+
+    -- Ask server how many pads will be used (like battery/body menus do)
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:calcBrakeRepair', function(info)
+        if not info or info.error then
+            QBCore.Functions.Notify(info and info.error or 'Brake repair unavailable.', 'error')
+            return
+        end
+        if (info.toUse or 0) <= 0 then
+            QBCore.Functions.Notify(('Brake pads needed: %d | You have: %d'):format(info.padsNeeded or 0, info.havePads or 0), 'error')
+            return
+        end
+
+        -- Progress per pad (UX parity with other repairs)
+        for i = 1, info.toUse do
+            if QBCore.Functions.Progressbar then
+                QBCore.Functions.Progressbar('pf_brake_repair', ('Replacing brake pad %d/%d'):format(i, info.toUse), 2200, false, true, {
+                    disableMovement = true, disableCarMovement = true, disableMouse = false, disableCombat = true,
+                }, { animDict = 'mini@repair', anim = 'fixing_a_ped', flags = 49 }, {}, {}, function() end, function() end)
+            else
+                Wait(2200)
+            end
+            Wait(150)
+        end
+
+        -- Apply on server (remove items + update damage server-side)
+        TriggerServerEvent('pf-mechanicjob:server:applyBrakeRepair', vehNet, info.toUse)
+    end, vehNet)
+end)
+
+-- Final result notifier
+RegisterNetEvent('pf-mechanicjob:client:brakeRepairResult', function(used, newBrakeDmg, err)
+    if err then
+        QBCore.Functions.Notify(err, 'error')
+        return
+    end
+    local newHealth = math.max(0, 100 - (tonumber(newBrakeDmg) or 0))
+    QBCore.Functions.Notify(('Replaced %d brake pad%s. New brake health: %d%%'):format(used or 0, (used or 0) > 1 and 's' or '', newHealth), 'success')
+end)
+
+-- optional fallback command to test without UI
+RegisterCommand('repairbrakes', function()
+    TriggerEvent('pf-mechanicjob:client:repair:brakes')
 end, false)
