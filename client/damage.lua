@@ -576,6 +576,10 @@ local function calculateDrivingMultiplier(veh, partKey)
     return multiplier
 end
 
+-- Cache for original handling values to avoid compounding multipliers
+local BrakeHandlingBase = {}      -- [veh] = { brake = number, hand = number }
+local BrakeLastMultiplier = {}    -- [veh] = number
+
 -- REPLACE the brake force thread completely
 CreateThread(function()
     while true do
@@ -603,33 +607,39 @@ CreateThread(function()
             local fwd = GetEntityForwardVector(veh)
             local fwdSpeed = vel.x*fwd.x + vel.y*fwd.y + vel.z*fwd.z
             local speed = math.sqrt(vel.x*vel.x + vel.y*vel.y + vel.z*vel.z)
-            
-            -- Only disable S key when moving forward at reasonable speed
             if fwdSpeed > 0.5 and speed > 0.5 then
                 DisableControlAction(0, 72, true) -- Disable brake when moving forward
             end
-            -- When stopped (speed < 0.5) or reversing (fwdSpeed < 0), S key works for reverse
         end
 
         -- Apply brake force reduction based on health (linear 1:1 mapping)
-        -- 100% health = 100% brake force
-        -- 90% health = 90% brake force
-        -- 0% health = 0% brake force
         local brakeMultiplier = brakeHealth / 100.0
-        
-        -- Get base brake force and apply multiplier
-        local baseBrakeForce = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce')
-        if baseBrakeForce and baseBrakeForce > 0 then
-            local modifiedBrakeForce = baseBrakeForce * brakeMultiplier
-            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce', modifiedBrakeForce)
+
+        -- Initialize or recover base handling so we don't compound multipliers
+        if not BrakeHandlingBase[veh] then
+            local curBrake = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce') or 0.0
+            local curHand  = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce') or 0.0
+            local lastMult = BrakeLastMultiplier[veh] or 1.0
+            if lastMult > 0.0 then
+                -- Recover true base from last applied multiplier
+                curBrake = curBrake / lastMult
+                curHand  = curHand  / lastMult
+            end
+            BrakeHandlingBase[veh] = { brake = curBrake, hand = curHand }
         end
 
-        -- Apply handbrake force reduction based on brake health (same logic as above)
-        local baseHandBrakeForce = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce')
-        if baseHandBrakeForce and baseHandBrakeForce > 0 then
-            local modifiedHandBrakeForce = baseHandBrakeForce * brakeMultiplier
-            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce', modifiedHandBrakeForce)
+        local base = BrakeHandlingBase[veh]
+        if base and base.brake and base.brake > 0 then
+            local targetBrakeForce = base.brake * brakeMultiplier
+            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce', targetBrakeForce)
         end
+        if base and base.hand and base.hand > 0 then
+            local targetHandBrakeForce = base.hand * brakeMultiplier
+            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce', targetHandBrakeForce)
+        end
+
+        -- Track last multiplier applied for recovery next ticks
+        BrakeLastMultiplier[veh] = brakeMultiplier
 
         ::next::
     end
@@ -1009,11 +1019,10 @@ local function ensureControl(entity, timeoutMs)
     return NetworkHasControlOfEntity(entity)
 end
 
--- calculate brake pads needed based on current damage (1 per 25%, max 4)
+-- calculate brake pads needed for display (ceil to allow topping off)
 local function calcPadsNeeded(brakeDmg)
-    if brakeDmg >= 100 then return 4 end
-    local pads = math.ceil((brakeDmg > 0 and brakeDmg or 0) / 25)
-    return math.max(1, math.min(4, pads))
+    if brakeDmg <= 0 then return 0 end
+    return math.min(4, math.ceil(brakeDmg / 25))
 end
 
 -- count available brake pads in inventory
@@ -1044,49 +1053,40 @@ local function doMechanicAction(label, ms)
     end
 end
 
--- toolbox-style event: apply same flow used by battery/body (server-driven)
+-- toolbox-style event: one-use = one pad, repairs up to 25% (tops off if <25% remain)
 RegisterNetEvent('pf-mechanicjob:client:repair:brakes', function()
-    local ped = PlayerPedId()
-    local veh = IsPedInAnyVehicle(ped, false) and GetVehiclePedIsIn(ped, false) or (function()
-        local c = GetEntityCoords(ped)
-        local v = GetClosestVehicle(c.x, c.y, c.z, 6.0, 0, 70)
-        return (v ~= 0 and DoesEntityExist(v)) and v or nil
-    end)()
+    local veh = getRepairVehicle()
     if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
+    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
 
     local damage = getVehicleDamage(veh)
     if not damage then QBCore.Functions.Notify('Cannot read brake condition.', 'error'); return end
+
     local brakeDmg = tonumber(damage.brakes) or 0
-    if brakeDmg <= 0 then QBCore.Functions.Notify('Brakes are already in perfect condition.', 'success'); return end
+    if brakeDmg <= 0 then
+        QBCore.Functions.Notify('Brakes are already in perfect condition.', 'success')
+        return
+    end
 
-    local vehNet = NetworkGetNetworkIdFromEntity(veh)
-
-    -- Ask server how many pads will be used (like battery/body menus do)
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:calcBrakeRepair', function(info)
-        if not info or info.error then
-            QBCore.Functions.Notify(info and info.error or 'Brake repair unavailable.', 'error')
-            return
-        end
-        if (info.toUse or 0) <= 0 then
-            QBCore.Functions.Notify(('Brake pads needed: %d | You have: %d'):format(info.padsNeeded or 0, info.havePads or 0), 'error')
+    -- ask server to consume exactly 1 brake_pads
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeBrakePad', function(ok)
+        if not ok then
+            QBCore.Functions.Notify('You have no brake pads.', 'error')
             return
         end
 
-        -- Progress per pad (UX parity with other repairs)
-        for i = 1, info.toUse do
-            if QBCore.Functions.Progressbar then
-                QBCore.Functions.Progressbar('pf_brake_repair', ('Replacing brake pad %d/%d'):format(i, info.toUse), 2200, false, true, {
-                    disableMovement = true, disableCarMovement = true, disableMouse = false, disableCombat = true,
-                }, { animDict = 'mini@repair', anim = 'fixing_a_ped', flags = 49 }, {}, {}, function() end, function() end)
-            else
-                Wait(2200)
-            end
-            Wait(150)
-        end
+        -- single-pad workflow
+        doMechanicAction('Replacing 1 brake pad', 2200)
 
-        -- Apply on server (remove items + update damage server-side)
-        TriggerServerEvent('pf-mechanicjob:server:applyBrakeRepair', vehNet, info.toUse)
-    end, vehNet)
+        -- apply up to 25% repair, clamped to remaining damage (tops off uneven)
+        local repairChunk = math.min(25, brakeDmg)
+        brakeDmg = math.max(0, brakeDmg - repairChunk)
+        damage.brakes = brakeDmg
+        applyDamage(veh, damage)
+
+        local newHealth = math.max(0, 100 - brakeDmg)
+        QBCore.Functions.Notify(('Brakes repaired by %d%%. Health: %d%%'):format(repairChunk, newHealth), 'success')
+    end)
 end)
 
 -- Final result notifier
@@ -1103,3 +1103,7 @@ end)
 RegisterCommand('repairbrakes', function()
     TriggerEvent('pf-mechanicjob:client:repair:brakes')
 end, false)
+
+RegisterNetEvent('qb-core:client:use:brake_pads', function()
+    TriggerEvent('pf-mechanicjob:client:repair:brakes')
+end)

@@ -26,11 +26,14 @@ shared_scripts {
 
 client_scripts {
   'client/main.lua',
-  'client/damage.lua'
+  'client/damage.lua',
+  'client/tools_menu.lua'
 }
 
 server_scripts {
   '@oxmysql/lib/MySQL.lua',
   'server/main.lua',
-  'server/repair.lua'
+  'server/repair.lua',
+  'server/useables.lua',
+  'server/consumables.lua'
 }
