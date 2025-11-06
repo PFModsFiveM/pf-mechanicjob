@@ -269,12 +269,19 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
         hp = math.floor(tonumber(hp) or 0)
         hp = math.max(0, math.min(100, hp))
         
-        local needed = partsNeededForRepair(ruleKey, hp)
-        needed = math.floor(tonumber(needed) or 0)
+        -- Only show "Needs:" if health is below 100%
+        local txt
+        if hp >= 100 then
+            txt = 'Perfect condition'
+        else
+            local needed = partsNeededForRepair(ruleKey, hp)
+            needed = math.floor(tonumber(needed) or 0)
+            txt = string.format('Needs: %d parts', needed)
+        end
         
         menu[#menu+1] = {
             header = string.format('%s — %d%%', label, hp),
-            txt = string.format('Health: %d%%  •  Needs: %d parts', hp, needed),
+            txt = txt,
             params = {}
         }
     end
@@ -312,7 +319,7 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
             local label = wheelNames[i] or ('Wheel '..tostring(i))
             menu[#menu+1] = {
                 header = string.format('Tire %s — 0%%', label),
-                txt = 'Health: 0%  •  Needs: 1 tire',
+                txt = 'Needs: 1 tire',
                 params = {}
             }
         end
@@ -320,8 +327,8 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
 
     if burstCount == 0 then
         menu[#menu+1] = {
-            header = 'Tires — OK',
-            txt = 'No tires need replacement',
+            header = 'Tires — 100%',
+            txt = 'Perfect condition',
             params = {}
         }
     end
