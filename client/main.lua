@@ -12,6 +12,9 @@ local tabletProp = `prop_cs_tablet`
 local tabletBone = 60309
 local tabletObj = nil
 
+-- NEW: Global clipboard tracker for cleanup
+currentClipboard = nil
+
 -- Register useable item
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
     QBCore.Functions.TriggerCallback('QBCore:Server:GetObject', function(obj)
@@ -715,157 +718,10 @@ end)
 
 -- Mechanics job tablet
 RegisterNetEvent('pf-mechanicjob:client:useMechanicTools', function()
-    local vehicle = nearbyVeh(3.0)
-    if vehicle == 0 then
-        QBCore.Functions.Notify('No vehicle nearby', 'error')
-        return
-    end
-
-    -- Add safety check
-    if not DoesEntityExist(vehicle) then
-        QBCore.Functions.Notify('Vehicle no longer exists', 'error')
-        return
-    end
-
-    -- Fix: properly calculate health percentages from 0-1000 scale with safety checks
-    local engineHealth = GetVehicleEngineHealth(vehicle)
-    local bodyHealth = GetVehicleBodyHealth(vehicle)
-    local tankHealth = GetVehiclePetrolTankHealth(vehicle)
+    print('[TOOLS DEBUG] useMechanicTools event received') -- Debug
     
-    -- Clamp values to prevent errors
-    engineHealth = math.max(0, math.min(1000, tonumber(engineHealth) or 0))
-    bodyHealth = math.max(0, math.min(1000, tonumber(bodyHealth) or 0))
-    tankHealth = math.max(0, math.min(1000, tonumber(tankHealth) or 0))
-    
-    local engineHealthPct = math.floor(engineHealth / 10.0)
-    local bodyHealthPct = math.floor(bodyHealth / 10.0)
-    local tankHealthPct = math.floor(tankHealth / 10.0)
-
-    -- Safely get entity state with error handling
-    local partDamage = {}
-    local success, state = pcall(function()
-        return Entity(vehicle).state
-    end)
-    
-    if success and state then
-        partDamage = state.partDamage or {}
-    end
-
-    -- compute per-part health% (health = 100 - damage) with safety
-    local health = {}
-    health.alternator = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.alternator) or 0))))
-    health.sparkplugs = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.sparkplugs) or 0))))
-    health.carbattery = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.carbattery) or 0))))
-    health.engine_oil = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.oil) or 0))))
-    health.oil_filter = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.oil_filter) or 0))))
-    health.brakes = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.brakes) or 0))))  -- NEW
-    health.susp_arm = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.suspension) or 0))))
-    health.axleparts = math.floor(math.max(0, math.min(100, 100 - (tonumber(partDamage.axle) or 0))))
-    health.engine_overall = engineHealthPct
-    health.body_overall = bodyHealthPct
-
-    local menu = {
-        { header = "Vehicle Diagnostics", txt = GetVehicleNumberPlateText(vehicle) or 'Unknown', isMenuHeader = true, params = {} },
-        { header = "Overall Condition", txt = string.format("Engine %d%% • Body %d%% • Tank %d%%", engineHealthPct, bodyHealthPct, tankHealthPct), params = {} }
-    }
-
-    -- helper to append a part entry with computed needed count
-    local function addPartEntry(ruleKey, label, hp)
-        -- Convert to number and ensure it's an integer
-        hp = math.floor(tonumber(hp) or 0)
-        hp = math.max(0, math.min(100, hp))
-        
-        local needed = partsNeededForRepair(ruleKey, hp)
-        needed = math.floor(tonumber(needed) or 0)
-        
-        local txt = string.format("Health: %d%%  •  Needs: %d", hp, needed)
-        menu[#menu+1] = {
-            header = string.format("%s — %d%%", tostring(label), hp),
-            txt = txt,
-            params = { event = 'pf-mechanicjob:client:openRepairSuggest', args = { vehicle = vehicle, part = ruleKey, needed = needed } }
-        }
-    end
-
-    -- Engine & Body
-    addPartEntry('engine_part', 'Engine (overall)', health.engine_overall)
-    addPartEntry('body_part',   'Body (overall)',   health.body_overall)
-
-    -- Electrical System
-    addPartEntry('alternator',  DiagnosticLabels.alternator or 'Alternator', health.alternator)
-    addPartEntry('carbattery',  DiagnosticLabels.carbattery or 'Car Battery', health.carbattery)
-
-    -- Engine Components
-    addPartEntry('sparkplugs',  DiagnosticLabels.sparkplugs or 'Spark Plugs', health.sparkplugs)
-    addPartEntry('engine_oil',  DiagnosticLabels.engine_oil or 'Engine Oil', health.engine_oil)
-    addPartEntry('oil_filter',  DiagnosticLabels.oil_filter or 'Oil Filter', health.oil_filter)
-
-    -- Braking System - NEW
-    addPartEntry('brakes',      DiagnosticLabels.brakes or 'Brake Pads', health.brakes)
-
-    -- Suspension / Axle
-    addPartEntry('susp_arm',    DiagnosticLabels.susp_arm or 'Suspension Arm', health.susp_arm)
-    addPartEntry('axleparts',   DiagnosticLabels.axleparts or 'Axle Parts', health.axleparts)
-
-    -- Tires: detect actual burst tyres with safety
-    do
-        local burstCount = 0
-        local wheelNames = { [0]='Front Left', [1]='Front Right', [2]='Rear Left', [3]='Rear Right', [4]='Middle Left', [5]='Middle Right' }
-        
-        for i=0,5 do
-            local isBurst = false
-            pcall(function()
-                isBurst = IsVehicleTyreBurst(vehicle, i, false)
-            end)
-            
-            if isBurst then
-                burstCount = burstCount + 1
-                local label = wheelNames[i] or ('Wheel '..tostring(i))
-                menu[#menu+1] = {
-                    header = string.format("Tire %s — 0%%", label),
-                    txt = "Health: 0%  •  Needs: 1",
-                    params = { event = 'pf-mechanicjob:client:openRepairSuggest', args = { vehicle = vehicle, part = 'tire_new', needed = 1, wheel = i } }
-                }
-            end
-        end
-
-        if burstCount == 0 then
-            -- Check state tire damage
-            if type(partDamage.tires) == 'table' then
-                for k,v in pairs(partDamage.tires) do
-                    local dmg = math.floor(tonumber(v) or 0)
-                    if dmg > 0 then
-                        local healthPct = math.max(0, 100 - dmg)
-                        menu[#menu+1] = {
-                            header = string.format("Tire %s — %d%%", tostring(k):upper(), healthPct),
-                            txt = string.format("Health: %d%%  •  Needs: 1", healthPct),
-                            params = { event = 'pf-mechanicjob:client:openRepairSuggest', args = { vehicle = vehicle, part = 'tire_new', needed = 1, wheel = k } }
-                        }
-                        burstCount = burstCount + 1
-                    end
-                end
-            end
-
-            if burstCount == 0 then
-                menu[#menu+1] = {
-                    header = "Tires — OK",
-                    txt = "No tyres need replacement",
-                    params = {}
-                }
-            end
-        end
-    end
-
-    menu[#menu+1] = { header = "Close", params = { event = "qb-menu:client:closeMenu" } }
-
-    -- Open menu with error handling
-    local success, err = pcall(function()
-        exports['qb-menu']:openMenu(menu)
-    end)
-    
-    if not success then
-        print('[pf-mechanicjob] Error opening diagnostic menu:', err)
-        QBCore.Functions.Notify('Error opening diagnostic menu', 'error')
-    end
+    -- Trigger the inspection event from tools_menu.lua
+    TriggerEvent('pf-mechanicjob:client:inspectVehicle')
 end)
 
 -- REPLACE old pf-mechanicjob:client:openRepairSuggest handler with this updated version

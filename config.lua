@@ -188,6 +188,7 @@ Config.DamageThresholds = {
 
 -- Action times (ms) for the progress bar
 Config.ActionTimes = {
+  inspection = 10000,    -- Vehicle inspection time
   setMod = 4500,
   oil    = 5500,     -- oil & oil filter
   engine = 5500,

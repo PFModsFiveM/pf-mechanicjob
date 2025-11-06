@@ -25,9 +25,9 @@ shared_scripts {
 }
 
 client_scripts {
-  'client/main.lua',
+  'client/tools_menu.lua', -- Load FIRST to define helper functions
   'client/damage.lua',
-  'client/tools_menu.lua'
+  'client/*.lua'
 }
 
 server_scripts {
@@ -36,4 +36,9 @@ server_scripts {
   'server/repair.lua',
   'server/useables.lua',
   'server/consumables.lua'
+}
+
+dependencies {
+    'qb-core',
+    'qb-menu'
 }

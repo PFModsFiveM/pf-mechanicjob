@@ -512,16 +512,6 @@ QBCore.Functions.CreateUseableItem("mech_tablet", function(source)
     end
 end)
 
--- Register mechanic tools item
-QBCore.Functions.CreateUseableItem("mechanic_tools", function(source)
-    local Player = QBCore.Functions.GetPlayer(source)
-    if Player.PlayerData.job.name == "mechanic" then
-        TriggerClientEvent('pf-mechanicjob:client:useMechanicTools', source)
-    else
-        TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
-    end
-end)
-
 -- Register performance parts
 local performanceParts = {
     "engine1", "engine2", "engine3", "engine4", "engine5",

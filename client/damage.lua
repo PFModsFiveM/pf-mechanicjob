@@ -995,6 +995,94 @@ RegisterCommand('damagebrakes', function(source, args)
     end
 end, false)
 
+-- Only repair vehicle body (does not touch engine)
+RegisterNetEvent('qb-core:client:use:body_part', function()
+    local veh = getRepairVehicle()
+    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
+    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
+
+    local body = GetVehicleBodyHealth(veh) or 0.0
+    if body >= 999.0 then
+        QBCore.Functions.Notify('Body is already fully repaired.', 'success')
+        return
+    end
+
+    -- snapshot unaffected components
+    local preEngine = GetVehicleEngineHealth(veh) or 0.0
+    local preTank = GetVehiclePetrolTankHealth(veh) or 1000.0
+
+    -- consume 1 body_part server-side
+    TriggerServerEvent('QBCore:Server:RemoveItem', 'body_part', 1)
+    if QBCore.Shared and QBCore.Shared.Items and QBCore.Shared.Items['body_part'] then
+        TriggerEvent('inventory:client:ItemBox', QBCore.Shared.Items['body_part'], 'remove', 1)
+    end
+
+    doMechanicAction('Repairing body...', 2500)
+
+    -- repair up to 25% of body (250.0 on 0-1000 scale)
+    local repairChunk = math.min(250.0, 1000.0 - body)
+    SetVehicleBodyHealth(veh, math.min(1000.0, body + repairChunk))
+
+    -- immediately restore unaffected components (engine/tank)
+    SetVehicleEngineHealth(veh, preEngine)
+    SetVehiclePetrolTankHealth(veh, preTank)
+
+    -- enforce unaffected components for a short window to avoid side-effects
+    CreateThread(function()
+        local expire = GetGameTimer() + 1200 -- ~1.2s
+        while GetGameTimer() < expire do
+            if not DoesEntityExist(veh) then break end
+            SetVehicleEngineHealth(veh, preEngine)
+            SetVehiclePetrolTankHealth(veh, preTank)
+            Wait(0)
+        end
+    end)
+
+    local newBody = math.floor((GetVehicleBodyHealth(veh) or 0.0) / 10)
+    QBCore.Functions.Notify(('Body repaired by %d%%. Body: %d%%'):format(math.floor(repairChunk / 10), newBody), 'success')
+end)
+
+-- Only repair engine (does not touch body)
+RegisterNetEvent('qb-core:client:use:engine_part', function()
+    local veh = getRepairVehicle()
+    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
+    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
+
+    local eng = GetVehicleEngineHealth(veh) or 0.0
+    if eng >= 999.0 then
+        QBCore.Functions.Notify('Engine is already fully repaired.', 'success')
+        return
+    end
+
+    -- snapshot unaffected component
+    local preBody = GetVehicleBodyHealth(veh) or 0.0
+
+    -- consume 1 engine_part server-side
+    TriggerServerEvent('QBCore:Server:RemoveItem', 'engine_part', 1)
+    if QBCore.Shared and QBCore.Shared.Items and QBCore.Shared.Items['engine_part'] then
+        TriggerEvent('inventory:client:ItemBox', QBCore.Shared.Items['engine_part'], 'remove', 1)
+    end
+
+    doMechanicAction('Repairing engine...', 2500)
+
+    -- repair up to 25% of engine (250.0 on 0-1000 scale)
+    local repairChunk = math.min(250.0, 1000.0 - eng)
+    SetVehicleEngineHealth(veh, math.min(1000.0, eng + repairChunk))
+
+    -- enforce unaffected component for a few frames (avoid side-effects)
+    CreateThread(function()
+        for i = 1, 10 do
+            if DoesEntityExist(veh) then
+                SetVehicleBodyHealth(veh, preBody)
+            end
+            Wait(0)
+        end
+    end)
+
+    local newEng = math.floor((GetVehicleEngineHealth(veh) or 0.0) / 10)
+    QBCore.Functions.Notify(('Engine repaired by %d%%. Engine: %d%%'):format(math.floor(repairChunk / 10), newEng), 'success')
+end)
+
 -- helper: get usable vehicle (in or near player)
 local function getRepairVehicle()
     local ped = PlayerPedId()
@@ -1106,4 +1194,92 @@ end, false)
 
 RegisterNetEvent('qb-core:client:use:brake_pads', function()
     TriggerEvent('pf-mechanicjob:client:repair:brakes')
+end)
+
+-- Only repair vehicle body (does not touch engine)
+RegisterNetEvent('qb-core:client:use:body_part', function()
+    local veh = getRepairVehicle()
+    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
+    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
+
+    local body = GetVehicleBodyHealth(veh) or 0.0
+    if body >= 999.0 then
+        QBCore.Functions.Notify('Body is already fully repaired.', 'success')
+        return
+    end
+
+    -- snapshot unaffected components
+    local preEngine = GetVehicleEngineHealth(veh) or 0.0
+    local preTank = GetVehiclePetrolTankHealth(veh) or 1000.0
+
+    -- consume 1 body_part server-side
+    TriggerServerEvent('QBCore:Server:RemoveItem', 'body_part', 1)
+    if QBCore.Shared and QBCore.Shared.Items and QBCore.Shared.Items['body_part'] then
+        TriggerEvent('inventory:client:ItemBox', QBCore.Shared.Items['body_part'], 'remove', 1)
+    end
+
+    doMechanicAction('Repairing body...', 2500)
+
+    -- repair up to 25% of body (250.0 on 0-1000 scale)
+    local repairChunk = math.min(250.0, 1000.0 - body)
+    SetVehicleBodyHealth(veh, math.min(1000.0, body + repairChunk))
+
+    -- immediately restore unaffected components (engine/tank)
+    SetVehicleEngineHealth(veh, preEngine)
+    SetVehiclePetrolTankHealth(veh, preTank)
+
+    -- enforce unaffected components for a short window to avoid side-effects
+    CreateThread(function()
+        local expire = GetGameTimer() + 1200 -- ~1.2s
+        while GetGameTimer() < expire do
+            if not DoesEntityExist(veh) then break end
+            SetVehicleEngineHealth(veh, preEngine)
+            SetVehiclePetrolTankHealth(veh, preTank)
+            Wait(0)
+        end
+    end)
+
+    local newBody = math.floor((GetVehicleBodyHealth(veh) or 0.0) / 10)
+    QBCore.Functions.Notify(('Body repaired by %d%%. Body: %d%%'):format(math.floor(repairChunk / 10), newBody), 'success')
+end)
+
+-- Only repair engine (does not touch body)
+RegisterNetEvent('qb-core:client:use:engine_part', function()
+    local veh = getRepairVehicle()
+    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
+    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
+
+    local eng = GetVehicleEngineHealth(veh) or 0.0
+    if eng >= 999.0 then
+        QBCore.Functions.Notify('Engine is already fully repaired.', 'success')
+        return
+    end
+
+    -- snapshot unaffected component
+    local preBody = GetVehicleBodyHealth(veh) or 0.0
+
+    -- consume 1 engine_part server-side
+    TriggerServerEvent('QBCore:Server:RemoveItem', 'engine_part', 1)
+    if QBCore.Shared and QBCore.Shared.Items and QBCore.Shared.Items['engine_part'] then
+        TriggerEvent('inventory:client:ItemBox', QBCore.Shared.Items['engine_part'], 'remove', 1)
+    end
+
+    doMechanicAction('Repairing engine...', 2500)
+
+    -- repair up to 25% of engine (250.0 on 0-1000 scale)
+    local repairChunk = math.min(250.0, 1000.0 - eng)
+    SetVehicleEngineHealth(veh, math.min(1000.0, eng + repairChunk))
+
+    -- enforce unaffected component for a few frames (avoid side-effects)
+    CreateThread(function()
+        for i = 1, 10 do
+            if DoesEntityExist(veh) then
+                SetVehicleBodyHealth(veh, preBody)
+            end
+            Wait(0)
+        end
+    end)
+
+    local newEng = math.floor((GetVehicleEngineHealth(veh) or 0.0) / 10)
+    QBCore.Functions.Notify(('Engine repaired by %d%%. Engine: %d%%'):format(math.floor(repairChunk / 10), newEng), 'success')
 end)
