@@ -131,6 +131,19 @@ QBCore.Functions.CreateUseableItem('service_book', function(source)
     TriggerClientEvent('pf-mechanicjob:client:use:service_book', source)
 end)
 
+-- Make tire_new usable (replace burst tires)
+QBCore.Functions.CreateUseableItem('tire_new', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+
+    if not isAllowedJob(Player, 'tire_new') then
+        TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
+        return
+    end
+
+    TriggerClientEvent('pf-mechanicjob:client:use:tire_new', source)
+end)
+
 -- Callback for consuming brake pads atomically
 QBCore.Functions.CreateCallback('pf-mechanicjob:server:consumeBrakePad', function(source, cb)
     local Player = QBCore.Functions.GetPlayer(source)

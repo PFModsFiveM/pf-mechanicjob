@@ -979,7 +979,7 @@ local function addPartDamage(veh, part, add)
     return true
 end
 
--- DEBUG COMMANDS
+-- DEBUG COMMANDS (only register if Config.Debug = true)
 if Config.Debug then
     RegisterCommand('damagepart', function(_, args)
         local part, value = args[1], args[2]
@@ -1025,46 +1025,46 @@ if Config.Debug then
         applyAndSyncDamage(veh, damage)
         QBCore.Functions.Notify('All part damage reset', 'success')
     end)
-end -- FIX: Added missing end for Config.Debug block
 
--- Convenience damage commands: /damageoil 80, /damagebrakes 60, etc.
-local function clamp01(v) return math.max(0, math.min(100, tonumber(v) or 0)) end
-local function setPartAndSync(veh, part, value)
-    local d = getVehicleDamage(veh) or {}
-    d[part] = clamp01(value)
-    applyDamage(veh, d)
-    applyDamageEffects(veh, d)
-end
-local function regDamageCommand(cmd, partKey)
-    RegisterCommand(cmd, function(_, args)
-        local ped = PlayerPedId()
-        local veh = GetVehiclePedIsIn(ped, false)
-        if veh == 0 then QBCore.Functions.Notify('Not in a vehicle', 'error'); return end
-        local val = args[1]
-        if val == nil then
-            QBCore.Functions.Notify(('Usage: /%s <0-100>'):format(cmd), 'error')
-            return
-        end
-        setPartAndSync(veh, partKey, val)
-        QBCore.Functions.Notify(('Set %s damage to %d%%'):format(partKey, clamp01(val)), 'primary')
-    end, false)
-end
+    -- Convenience damage commands: /damageoil 80, /damagebrakes 60, etc.
+    local function clamp01(v) return math.max(0, math.min(100, tonumber(v) or 0)) end
+    local function setPartAndSync(veh, part, value)
+        local d = getVehicleDamage(veh) or {}
+        d[part] = clamp01(value)
+        applyDamage(veh, d)
+        applyDamageEffects(veh, d)
+    end
+    local function regDamageCommand(cmd, partKey)
+        RegisterCommand(cmd, function(_, args)
+            local ped = PlayerPedId()
+            local veh = GetVehiclePedIsIn(ped, false)
+            if veh == 0 then QBCore.Functions.Notify('Not in a vehicle', 'error'); return end
+            local val = args[1]
+            if val == nil then
+                QBCore.Functions.Notify(('Usage: /%s <0-100>'):format(cmd), 'error')
+                return
+            end
+            setPartAndSync(veh, partKey, val)
+            QBCore.Functions.Notify(('Set %s damage to %d%%'):format(partKey, clamp01(val)), 'primary')
+        end, false)
+    end
 
--- Register per-part commands
-regDamageCommand('damageoil',                'oil')
-regDamageCommand('damagebrakes',             'brakes')
-regDamageCommand('damagebattery',            'carbattery')
-regDamageCommand('damagecarbattery',         'carbattery')
-regDamageCommand('damagesparkplugs',         'sparkplugs')
-regDamageCommand('damagealternator',         'alternator')
-regDamageCommand('damageradiator',           'radiator')
-regDamageCommand('damagecoolant',            'coolant')
-regDamageCommand('damagebrakefluid',         'brakefluid')
-regDamageCommand('damagetransmissionfluid',  'transmissionfluid')
-regDamageCommand('damagepowersteeringpump',  'powersteeringpump')
-regDamageCommand('damagepowersteeringfluid', 'power_steering_fluid')
-regDamageCommand('damagesuspension',         'suspension')
-regDamageCommand('damageaxle',               'axle')
+    -- Register per-part commands
+    regDamageCommand('damageoil',                'oil')
+    regDamageCommand('damagebrakes',             'brakes')
+    regDamageCommand('damagebattery',            'carbattery')
+    regDamageCommand('damagecarbattery',         'carbattery')
+    regDamageCommand('damagesparkplugs',         'sparkplugs')
+    regDamageCommand('damagealternator',         'alternator')
+    regDamageCommand('damageradiator',           'radiator')
+    regDamageCommand('damagecoolant',            'coolant')
+    regDamageCommand('damagebrakefluid',         'brakefluid')
+    regDamageCommand('damagetransmissionfluid',  'transmissionfluid')
+    regDamageCommand('damagepowersteeringpump',  'powersteeringpump')
+    regDamageCommand('damagepowersteeringfluid', 'power_steering_fluid')
+    regDamageCommand('damagesuspension',         'suspension')
+    regDamageCommand('damageaxle',               'axle')
+end -- END Config.Debug block
 
 -- Main damage loop
 CreateThread(function()
@@ -1346,34 +1346,52 @@ CreateThread(function()
     end
 end)
 
--- Commands (fixed)
-RegisterCommand('toggledamage', function()
-    DamageConfig.enabled = not DamageConfig.enabled
-    QBCore.Functions.Notify('Damage system: ' .. (DamageConfig.enabled and 'Enabled' or 'Disabled'), 'info')
-end, false)
+-- Commands (fixed) - WRAP IN DEBUG CHECK
+if Config.Debug then
+    RegisterCommand('toggledamage', function()
+        DamageConfig.enabled = not DamageConfig.enabled
+        QBCore.Functions.Notify('Damage system: ' .. (DamageConfig.enabled and 'Enabled' or 'Disabled'), 'info')
+    end, false)
 
-RegisterCommand('resetdamage', function()
-    local ped = PlayerPedId()
-    if not IsPedInAnyVehicle(ped, false) then
-        QBCore.Functions.Notify('Not in a vehicle', 'error')
-        return
-    end
-    local veh = GetVehiclePedIsIn(ped, false)
-    local state = Entity(veh).state
-    local damage = {
-        alternator = 0, sparkplugs = 0, carbattery = 0,
-        oil = 0, oil_filter = 0, brakes = 0,
-        suspension = 0, axle = 0,
-        fuel_injector = 0, powersteeringpump = 0, radiator = 0,
-        power_steering_fluid = 0, transmissionfluid = 0,
-        brakefluid = 0, coolant = 0
-    }
-    SafeStateSet(veh, 'partDamage', damage)
-    SetVehicleEngineHealth(veh, 1000.0)
-    SetVehicleBodyHealth(veh, 1000.0)
-    SetVehicleFixed(veh)
-    QBCore.Functions.Notify('Vehicle damage reset', 'success')
-end, false)
+    RegisterCommand('resetdamage', function()
+        local ped = PlayerPedId()
+        if not IsPedInAnyVehicle(ped, false) then
+            QBCore.Functions.Notify('Not in a vehicle', 'error')
+            return
+        end
+        local veh = GetVehiclePedIsIn(ped, false)
+        local state = Entity(veh).state
+        local damage = {
+            alternator = 0, sparkplugs = 0, carbattery = 0,
+            oil = 0, oil_filter = 0, brakes = 0,
+            suspension = 0, axle = 0,
+            fuel_injector = 0, powersteeringpump = 0, radiator = 0,
+            power_steering_fluid = 0, transmissionfluid = 0,
+            brakefluid = 0, coolant = 0
+        }
+        SafeStateSet(veh, 'partDamage', damage)
+        SetVehicleEngineHealth(veh, 1000.0)
+        SetVehicleBodyHealth(veh, 1000.0)
+        SetVehicleFixed(veh)
+        QBCore.Functions.Notify('Vehicle damage reset', 'success')
+    end, false)
+
+    RegisterCommand('savedamage', function()
+        local ped = PlayerPedId()
+        if not IsPedInAnyVehicle(ped, false) then
+            QBCore.Functions.Notify('Not in a vehicle', 'error')
+            return
+        end
+        
+        local veh = GetVehiclePedIsIn(ped, false)
+        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+        local state = Entity(veh).state
+        local partDamage = state.partDamage or {}
+        
+        TriggerServerEvent('pf_mech:sync:forceSave', plate)
+        QBCore.Functions.Notify(string.format('Saved %s (oil: %.1f%%)', plate, tonumber(partDamage.oil) or 0), 'success')
+    end, false)
+end -- END DEBUG COMMANDS
 
 -- Item use handlers (fixed, minimal and reliable)
 RegisterNetEvent('pf-mechanicjob:client:use:alternator', function()

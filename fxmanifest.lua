@@ -20,12 +20,13 @@ files {
 }
 
 shared_scripts {
+  '@ox_lib/init.lua',             -- NEW: load ox_lib to get the `lib` global
   '@qb-core/shared/locale.lua',
   'config.lua'
 }
 
 client_scripts {
-  'client/tools_menu.lua', -- Load FIRST to define helper functions
+  'client/tools_menu.lua',  -- MUST remain first for early exports
   'client/damage.lua',
   'client/main.lua',
   'client/minigames.lua',
@@ -44,8 +45,8 @@ server_scripts {
 
 escrow_ignore 'config.lua'
 
-
 dependencies {
     'qb-core',
-    'qb-menu'
+    'qb-menu',
+    'ox_lib'                      -- NEW: ensure ox_lib is present when enabled in config
 }

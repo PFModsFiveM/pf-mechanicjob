@@ -104,43 +104,79 @@ RegisterNetEvent('pf_mech:sync:cacheVehicleState', function(payload)
     end
 end)
 
--- Force save (manual /savedamage command)
-RegisterNetEvent('pf_mech:sync:forceSave', function(plate)
-    plate = tostring(plate or ''):gsub('%s+', ''):upper()
-    if plate == '' then return end
-    
-    local cached = vehicleStateCache[plate]
-    if not cached then
-        if Config.Debug then print('[GARAGE SYNC] No cached state for '..plate) end
-        return
-    end
-    
-    local citizenid = getCitizenIdFromPlate(plate)
-    if not citizenid then
-        if Config.Debug then print('[GARAGE SYNC] No citizenid for '..plate) end
-        return
-    end
-    
-    local props = cached.props or {}
-    local pd = props.partDamage or {}
-    
-    -- Save diagnostics
-    upsertDiagnostics(
-        plate, citizenid, pd,
-        props.mileage or 0,
-        props.engineHealth or 1000.0,
-        props.bodyHealth or 1000.0,
-        props.tankHealth or 1000.0,
-        props.dirtLevel or 0.0
-    )
-    
-    -- Save full props to player_vehicles.mods
-    MySQL.update.await('UPDATE player_vehicles SET mods = ? WHERE plate = ?', { json.encode(props), plate })
-    
-    if Config.Debug then
-        print(string.format('[GARAGE SYNC] Force saved: %s', plate))
-    end
-end)
+-- Force save (manual /savedamage command) - ONLY REGISTER IF DEBUG
+if Config.Debug then
+    RegisterNetEvent('pf_mech:sync:forceSave', function(plate)
+        local src = source
+        plate = tostring(plate or ''):gsub('%s+', ''):upper()
+        if plate == '' then return end
+        
+        local cached = vehicleStateCache[plate]
+        if not cached then
+            if Config.Debug then print('[GARAGE SYNC] No cached state for '..plate..', checking for live vehicle...') end
+            
+            -- NEW: If no cache, try to get live vehicle data from client
+            TriggerClientEvent('pf_mech:client:requestLiveState', src, plate)
+            return
+        end
+        
+        local citizenid = getCitizenIdFromPlate(plate)
+        if not citizenid then
+            if Config.Debug then print('[GARAGE SYNC] No citizenid for '..plate) end
+            return
+        end
+        
+        local props = cached.props or {}
+        local pd = props.partDamage or {}
+        
+        -- Save diagnostics
+        upsertDiagnostics(
+            plate, citizenid, pd,
+            props.mileage or 0,
+            props.engineHealth or 1000.0,
+            props.bodyHealth or 1000.0,
+            props.tankHealth or 1000.0,
+            props.dirtLevel or 0.0
+        )
+        
+        -- Save full props to player_vehicles.mods
+        MySQL.update.await('UPDATE player_vehicles SET mods = ? WHERE plate = ?', { json.encode(props), plate })
+        
+        if Config.Debug then
+            print(string.format('[GARAGE SYNC] Force saved: %s (oil: %.1f%%, brakes: %.1f%%)', 
+                plate,
+                tonumber(pd.oil) or 0,
+                tonumber(pd.brakes) or 0
+            ))
+        end
+    end)
+else
+    -- Production: Force save still works but no debug output
+    RegisterNetEvent('pf_mech:sync:forceSave', function(plate)
+        plate = tostring(plate or ''):gsub('%s+', ''):upper()
+        if plate == '' then return end
+        
+        local cached = vehicleStateCache[plate]
+        if not cached then return end
+        
+        local citizenid = getCitizenIdFromPlate(plate)
+        if not citizenid then return end
+        
+        local props = cached.props or {}
+        local pd = props.partDamage or {}
+        
+        upsertDiagnostics(
+            plate, citizenid, pd,
+            props.mileage or 0,
+            props.engineHealth or 1000.0,
+            props.bodyHealth or 1000.0,
+            props.tankHealth or 1000.0,
+            props.dirtLevel or 0.0
+        )
+        
+        MySQL.update.await('UPDATE player_vehicles SET mods = ? WHERE plate = ?', { json.encode(props), plate })
+    end)
+end
 
 -- Hook into qb-garages vehicle storage
 RegisterNetEvent('qb-garages:server:updateVehicleStats', function(plate, fuel, engineHealth, bodyHealth)
@@ -149,7 +185,7 @@ RegisterNetEvent('qb-garages:server:updateVehicleStats', function(plate, fuel, e
     
     local cached = vehicleStateCache[plate]
     if not cached then
-        if Config.Debug then print('[GARAGE SYNC] No cached state on store: '..plate) end
+        if Config.Debug then print('[GARAGE SYNC][QB] No cached state on store: '..plate) end
         return
     end
     
@@ -159,7 +195,6 @@ RegisterNetEvent('qb-garages:server:updateVehicleStats', function(plate, fuel, e
     local props = cached.props or {}
     local pd = props.partDamage or {}
     
-    -- Save diagnostics
     upsertDiagnostics(
         plate, citizenid, pd,
         props.mileage or 0,
@@ -169,11 +204,10 @@ RegisterNetEvent('qb-garages:server:updateVehicleStats', function(plate, fuel, e
         props.dirtLevel or 0.0
     )
     
-    -- Save full props
     MySQL.update.await('UPDATE player_vehicles SET mods = ? WHERE plate = ?', { json.encode(props), plate })
     
     if Config.Debug then
-        print(string.format('[GARAGE SYNC] Saved on store: %s', plate))
+        print(string.format('[GARAGE SYNC][QB] Saved on store: %s', plate))
     end
     
     vehicleStateCache[plate] = nil
@@ -212,18 +246,20 @@ RegisterNetEvent('pf_mech:saveFullDiagnostics', function(plate, props)
     end
 end)
 
--- Debug command
-QBCore.Commands.Add('diagrow', 'Show diagnostics DB row', {{name='plate', help='Plate'}}, false, function(src, args)
-    local plate = tostring(args[1] or ''):gsub('%s+',''):upper()
-    if plate == '' then TriggerClientEvent('QBCore:Notify', src, 'Plate required', 'error'); return end
-    local row = MySQL.single.await('SELECT * FROM vehicle_diagnostics WHERE plate=?',{plate})
-    if row then
-        print('[DIAG ROW] '..plate..' -> '..json.encode(row))
-        TriggerClientEvent('QBCore:Notify', src, 'Row printed to server console', 'success')
-    else
-        TriggerClientEvent('QBCore:Notify', src, 'No row', 'error')
-    end
-end)
+-- Debug command (ONLY REGISTER IF DEBUG)
+if Config.Debug then
+    QBCore.Commands.Add('diagrow', 'Show diagnostics DB row', {{name='plate', help='Plate'}}, false, function(src, args)
+        local plate = tostring(args[1] or ''):gsub('%s+',''):upper()
+        if plate == '' then TriggerClientEvent('QBCore:Notify', src, 'Plate required', 'error'); return end
+        local row = MySQL.single.await('SELECT * FROM vehicle_diagnostics WHERE plate=?',{plate})
+        if row then
+            print('[DIAG ROW] '..plate..' -> '..json.encode(row))
+            TriggerClientEvent('QBCore:Notify', src, 'Row printed to server console', 'success')
+        else
+            TriggerClientEvent('QBCore:Notify', src, 'No row', 'error')
+        end
+    end)
+end
 
 -- Cleanup stale cache
 CreateThread(function()

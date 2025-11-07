@@ -317,14 +317,23 @@ Works out of the box. Vehicle diagnostics are automatically saved when storing v
 ### Codesign cd_garages
 
 1. Set `Config.GarageSystem = 'cd_garages'` in `config.lua`
-2. Ensure cd_garages is started before pf-mechanicjob
-3. Vehicle state will sync automatically
+2. Ensure cd_garages is started before pf-mechanicjob in server.cfg:
+   ```cfg
+   ensure cd_garages
+   ensure pf-mechanicjob
+   ```
+3. Vehicle diagnostics will automatically sync when:
+   - Player enters a vehicle (diagnostics are restored)
+   - Player stores a vehicle in garage (diagnostics are saved)
+   - Player is driving (synced every 10 seconds)
 
 **How it works:**
-- Client syncs vehicle state every 10 seconds while driving
-- Server caches full vehicle properties (including diagnostics)
-- When vehicle is stored in garage, cached state is saved to database
-- When vehicle is retrieved, diagnostics are restored
+- Client monitors vehicle entry and syncs diagnostics from database
+- Client detects garage storage attempts and saves current state
+- Server caches vehicle state every 10 seconds while driving
+- When cd_garages triggers its store event, cached state is written to database
+
+**Note:** cd_garages uses a different event system than qb-garages. The script automatically detects which garage system you're using based on `Config.GarageSystem`.
 
 ---
 

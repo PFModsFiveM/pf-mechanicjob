@@ -925,3 +925,92 @@ RegisterNetEvent('pf_mech:service:viewHistory', function(args)
         exports['qb-menu']:openMenu(menu)
     end, plate)
 end)
+
+-- Inject helper wrappers (after other local helpers)
+local function GetWheelIndices(veh)
+    local indices = {}
+    pcall(function()
+        local n = GetVehicleNumberOfWheels(veh)
+        if not n or n <= 0 then n = 4 end
+        if n <= 4 then
+            indices = {0,1,2,3}
+        else
+            for i=0, math.min(n-1, 5) do indices[#indices+1]=i end
+        end
+    end)
+    if #indices == 0 then indices = {0,1,2,3} end
+    return indices
+end
+
+-- REPLACE previous WheelDamaged wrapper with a version that DOES NOT use exports
+local function ResolveWheelDamaged(veh, idx)
+    -- Prefer global function from tools_menu.lua
+    if type(_G.IsWheelDamaged) == 'function' then
+        local ok, val = pcall(_G.IsWheelDamaged, veh, idx)
+        if ok then return val end
+    end
+    -- Fallback: vanilla burst checks
+    local b1,b2=false,false
+    pcall(function()
+        b1 = IsVehicleTyreBurst(veh, idx, false)
+        b2 = IsVehicleTyreBurst(veh, idx, true)
+    end)
+    return b1 or b2
+end
+
+-- SAFETY: ensure global IsWheelDamaged exists (prevents nil field errors)
+if type(IsWheelDamaged) ~= 'function' then
+    function IsWheelDamaged(veh, idx)
+        if not veh or not DoesEntityExist(veh) then return false end
+        local b1,b2=false,false
+        pcall(function()
+            b1 = IsVehicleTyreBurst(veh, idx, false)
+            b2 = IsVehicleTyreBurst(veh, idx, true)
+        end)
+        return b1 or b2
+    end
+end
+
+-- REPLACE tire_new handler loop to use simple burst checks
+RegisterNetEvent('pf-mechanicjob:client:use:tire_new', function()
+    local veh = getRepairVehicle()
+    if not veh then QBCore.Functions.Notify('No vehicle nearby', 'error'); return end
+    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle', 'error'); return end
+
+    local wheelIdx = -1
+    for _, i in ipairs(GetWheelIndices(veh)) do
+        -- Simple burst check only
+        if IsVehicleTyreBurst(veh, i, false) or IsVehicleTyreBurst(veh, i, true) then
+            wheelIdx = i
+            break
+        end
+    end
+    if wheelIdx == -1 then
+        QBCore.Functions.Notify('No damaged tire found', 'error')
+        return
+    end
+
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then QBCore.Functions.Notify('Missing tire', 'error'); return end
+
+        local didSteps = false
+        pcall(function() didSteps = exports['pf-mechanicjob']:DoWheelSteps() == true end)
+        if not didSteps then
+            DoProgress('Replacing tire...', 4000, 'amb@world_human_vehicle_mechanic@male@base', 'base')
+        end
+
+        -- Fix tire
+        SetVehicleTyreFixed(veh, wheelIdx)
+        Wait(100)
+
+        -- Update state
+        local st = Entity(veh).state
+        local pd = st.partDamage or {}
+        pd.tires = pd.tires or {}
+        local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[wheelIdx] or tostring(wheelIdx)
+        pd.tires[key] = 0
+        st:set('partDamage', pd, true)
+
+        QBCore.Functions.Notify('Tire replaced', 'success')
+    end, 'tire_new')
+end)

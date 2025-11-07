@@ -8,74 +8,145 @@ local function getGarageSystem()
     return (Config and Config.GarageSystem) or 'qb-garages'
 end
 
--- Register vehicle spawn event for both garage systems
-if getGarageSystem() == 'qb-garages' then
-    RegisterNetEvent('QBCore:Client:OnVehicleSpawn', function(veh)
-        if not veh or not DoesEntityExist(veh) then return end
-        
-        Wait(500)
-        
-        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
-        
-        -- Request saved state from database
-        QBCore.Functions.TriggerCallback('pf_mech:loadVehicleState', function(data)
-            if not data then return end
+-- Register vehicle spawn event for qb-garages
+RegisterNetEvent('QBCore:Client:OnVehicleSpawn', function(veh)
+    if getGarageSystem() ~= 'qb-garages' then return end
+    
+    if not veh or not DoesEntityExist(veh) then return end
+    Wait(500)
+    local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+    
+    QBCore.Functions.TriggerCallback('pf_mech:loadVehicleState', function(data)
+        if not data then return end
+        if data.partDamage then
+            local state = Entity(veh).state
+            state:set('partDamage', data.partDamage, true)
+            if Config.Debug then
+                print(string.format('[GARAGE SYNC][QB] Restored %s: oil=%.1f%%, brakes=%.1f%%', plate, 
+                    tonumber(data.partDamage.oil) or 0, 
+                    tonumber(data.partDamage.brakes) or 0))
+            end
+        end
+        if data.mileage then
+            local state = Entity(veh).state
+            state:set('mileage', tonumber(data.mileage) or 0, true)
+        end
+        if data.engineHealth then SetVehicleEngineHealth(veh, tonumber(data.engineHealth)) end
+        if data.bodyHealth then SetVehicleBodyHealth(veh, tonumber(data.bodyHealth)) end
+        if data.tankHealth then SetVehiclePetrolTankHealth(veh, tonumber(data.tankHealth)) end
+        if data.dirtLevel then SetVehicleDirtLevel(veh, tonumber(data.dirtLevel)) end
+    end, plate)
+    
+    garageSpawnedVehicles[plate] = veh
+end)
+
+-- cd_garages compatibility: monitor all vehicle entries
+if getGarageSystem() == 'cd_garages' then
+    local lastVehicleCheck = {}
+    
+    CreateThread(function()
+        while true do
+            Wait(1000)
             
-            -- Apply FULL partDamage first
-            if data.partDamage then
-                local state = Entity(veh).state
-                state:set('partDamage', data.partDamage, true)
+            local ped = PlayerPedId()
+            if IsPedInAnyVehicle(ped, false) then
+                local veh = GetVehiclePedIsIn(ped, false)
                 
-                if Config.Debug then
-                    print(string.format('[GARAGE SYNC] Restored %s: oil=%.1f%%, brakes=%.1f%%', plate, 
-                        tonumber(data.partDamage.oil) or 0, 
-                        tonumber(data.partDamage.brakes) or 0))
+                if veh ~= 0 and DoesEntityExist(veh) then
+                    local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+                    
+                    -- Only load once per vehicle
+                    if not lastVehicleCheck[plate] then
+                        lastVehicleCheck[plate] = true
+                        
+                        -- Load diagnostics for this vehicle
+                        QBCore.Functions.TriggerCallback('pf_mech:loadVehicleState', function(data)
+                            if data and data.partDamage then
+                                local state = Entity(veh).state
+                                local currentState = state.partDamage or {}
+                                
+                                -- Only apply if state is empty (freshly spawned)
+                                local isEmpty = true
+                                for k, v in pairs(currentState) do
+                                    if tonumber(v) and tonumber(v) > 0 then
+                                        isEmpty = false
+                                        break
+                                    end
+                                end
+                                
+                                if isEmpty then
+                                    state:set('partDamage', data.partDamage, true)
+                                    if data.mileage then state:set('mileage', tonumber(data.mileage) or 0, true) end
+                                    if data.engineHealth then SetVehicleEngineHealth(veh, tonumber(data.engineHealth)) end
+                                    if data.bodyHealth then SetVehicleBodyHealth(veh, tonumber(data.bodyHealth)) end
+                                    if data.tankHealth then SetVehiclePetrolTankHealth(veh, tonumber(data.tankHealth)) end
+                                    if data.dirtLevel then SetVehicleDirtLevel(veh, tonumber(data.dirtLevel)) end
+                                    
+                                    if Config.Debug then
+                                        print(string.format('[GARAGE SYNC][CD] Restored %s: oil=%.1f%%, brakes=%.1f%%', plate, 
+                                            tonumber(data.partDamage.oil) or 0, 
+                                            tonumber(data.partDamage.brakes) or 0))
+                                    end
+                                end
+                            end
+                        end, plate)
+                    end
                 end
             end
-            
-            -- Apply mileage
-            if data.mileage then
-                local state = Entity(veh).state
-                state:set('mileage', tonumber(data.mileage) or 0, true)
-            end
-            
-            -- Apply health values
-            if data.engineHealth then SetVehicleEngineHealth(veh, tonumber(data.engineHealth)) end
-            if data.bodyHealth then SetVehicleBodyHealth(veh, tonumber(data.bodyHealth)) end
-            if data.tankHealth then SetVehiclePetrolTankHealth(veh, tonumber(data.tankHealth)) end
-            if data.dirtLevel then SetVehicleDirtLevel(veh, tonumber(data.dirtLevel)) end
-        end, plate)
-        
-        garageSpawnedVehicles[plate] = veh
+        end
     end)
-elseif getGarageSystem() == 'cd_garages' then
-    -- cd_garages: vehicle spawn event
-    RegisterNetEvent('cd_garages:client:vehicleSpawned', function(veh, plate)
-        if not veh or not DoesEntityExist(veh) then return end
-        Wait(500)
-        plate = (plate or GetVehicleNumberPlateText(veh) or ''):gsub('%s+', ''):upper()
-        -- Request saved state from database
-        QBCore.Functions.TriggerCallback('pf_mech:loadVehicleState', function(data)
-            if not data then return end
-            if data.partDamage then
-                local state = Entity(veh).state
-                state:set('partDamage', data.partDamage, true)
-                if Config.Debug then
-                    print(string.format('[GARAGE SYNC][CD] Restored %s: oil=%.1f%%, brakes=%.1f%%', plate, 
-                        tonumber(data.partDamage.oil) or 0, 
-                        tonumber(data.partDamage.brakes) or 0))
+    
+    -- NEW: More aggressive vehicle deletion monitoring for cd_garages
+    local trackedVehicles = {}
+    
+    CreateThread(function()
+        while true do
+            Wait(500) -- Check every 500ms for faster detection
+            
+            local ped = PlayerPedId()
+            
+            -- Track all vehicles player is in
+            if IsPedInAnyVehicle(ped, false) then
+                local veh = GetVehiclePedIsIn(ped, false)
+                if veh ~= 0 and DoesEntityExist(veh) then
+                    local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+                    if GetPedInVehicleSeat(veh, -1) == ped then
+                        trackedVehicles[plate] = {
+                            vehicle = veh,
+                            entity = veh,
+                            lastSeen = GetGameTimer(),
+                            plate = plate
+                        }
+                    end
                 end
             end
-            if data.mileage then
-                local state = Entity(veh).state
-                state:set('mileage', tonumber(data.mileage) or 0, true)
+            
+            -- Check for deleted vehicles (garage storage)
+            for plate, data in pairs(trackedVehicles) do
+                local exists = DoesEntityExist(data.vehicle)
+                local timeSince = GetGameTimer() - data.lastSeen
+                
+                -- If vehicle no longer exists OR hasn't been seen in 3 seconds (stored)
+                if not exists or timeSince > 3000 then
+                    if Config.Debug then
+                        print(string.format('[GARAGE SYNC][CD] Vehicle %s %s, saving...', 
+                            plate, 
+                            not exists and 'deleted' or 'not seen'))
+                    end
+                    
+                    -- Force save before cleanup
+                    TriggerServerEvent('pf_mech:sync:forceSave', plate)
+                    
+                    -- Clean up tracking
+                    trackedVehicles[plate] = nil
+                    lastVehicleCheck[plate] = nil
+                    
+                    if Config.Debug then
+                        print(string.format('[GARAGE SYNC][CD] Saved %s to database', plate))
+                    end
+                end
             end
-            if data.engineHealth then SetVehicleEngineHealth(veh, tonumber(data.engineHealth)) end
-            if data.bodyHealth then SetVehicleBodyHealth(veh, tonumber(data.bodyHealth)) end
-            if data.tankHealth then SetVehiclePetrolTankHealth(veh, tonumber(data.tankHealth)) end
-            if data.dirtLevel then SetVehicleDirtLevel(veh, tonumber(data.dirtLevel)) end
-        end, plate)
-        garageSpawnedVehicles[plate] = veh
+        end
     end)
 end
 
@@ -134,7 +205,7 @@ local function buildPayloadFromVehicle(veh)
     }
 end
 
--- NEW: Continuous state sync (every 10 seconds while driving)
+-- Continuous state sync (every 10 seconds while driving)
 -- This ensures server ALWAYS has latest damage state, so when qb-garages stores the car, it's up-to-date
 CreateThread(function()
     while true do
@@ -183,23 +254,6 @@ CreateThread(function()
     end
 end)
 
--- Manual save command for testing
-RegisterCommand('savedamage', function()
-    local ped = PlayerPedId()
-    if not IsPedInAnyVehicle(ped, false) then
-        QBCore.Functions.Notify('Not in a vehicle', 'error')
-        return
-    end
-    
-    local veh = GetVehiclePedIsIn(ped, false)
-    local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
-    local state = Entity(veh).state
-    local partDamage = state.partDamage or {}
-    
-    TriggerServerEvent('pf_mech:sync:forceSave', plate)
-    QBCore.Functions.Notify(string.format('Saved %s (oil: %.1f%%)', plate, tonumber(partDamage.oil) or 0), 'success')
-end, false)
-
 -- Export for qb-garages to use (captures everything via GetVehicleProperties)
 exports('SyncVehicleDiagnostics', function(veh)
     if not veh or not DoesEntityExist(veh) then return end
@@ -224,16 +278,6 @@ exports('RestoreVehicleDiagnostics', function(veh, diag)
     if diag.bodyHealth then SetVehicleBodyHealth(veh, diag.bodyHealth + 0.0) end
 end)
 
--- Export current diagnostics snapshot
-exports('GetCurrentDiagnostics', function(veh)
-    if not veh or not DoesEntityExist(veh) then return nil end
-    local state = Entity(veh).state
-    local props = QBCore.Functions.GetVehicleProperties(veh)
-    props.partDamage = state.partDamage or {}
-    props.mileage = tonumber(state.mileage) or 0
-    return props
-end)
-
 -- Apply diagnostics snapshot to vehicle
 exports('ApplyVehicleDiagnostics', function(veh, data)
     if not veh or not DoesEntityExist(veh) or not data then return end
@@ -249,9 +293,52 @@ exports('ApplyVehicleDiagnostics', function(veh, data)
     end
 end)
 
--- Debug export
-exports('DebugPrintDiag', function(veh)
-    if not veh or not DoesEntityExist(veh) then return end
-    local st = Entity(veh).state
-    print('[DIAG DEBUG] plate='..(GetVehicleNumberPlateText(veh) or 'N/A')..' state='..json.encode(st.partDamage or {}))
+-- Debug export (only works when Config.Debug = true)
+if Config.Debug then
+    exports('DebugPrintDiag', function(veh)
+        if not veh or not DoesEntityExist(veh) then return end
+        local st = Entity(veh).state
+        print('[DIAG DEBUG] plate='..(GetVehicleNumberPlateText(veh) or 'N/A')..' state='..json.encode(st.partDamage or {}))
+    end)
+end
+
+-- NEW: Handler for server requesting live vehicle state (when cache is empty)
+RegisterNetEvent('pf_mech:client:requestLiveState', function(plate)
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then return end
+    
+    -- Find vehicle with this plate
+    local vehicles = GetGamePool('CVehicle')
+    for _, veh in ipairs(vehicles) do
+        if DoesEntityExist(veh) then
+            local vehPlate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+            if vehPlate == plate then
+                -- Found it! Send current state to server
+                local state = Entity(veh).state
+                local props = QBCore.Functions.GetVehicleProperties(veh)
+                props.partDamage = state.partDamage or {}
+                props.mileage = tonumber(state.mileage) or 0
+                
+                TriggerServerEvent('pf_mech:sync:cacheVehicleState', {
+                    plate = plate,
+                    netId = NetworkGetNetworkIdFromEntity(veh),
+                    props = props
+                })
+                
+                -- Now force save
+                Wait(100)
+                TriggerServerEvent('pf_mech:sync:forceSave', plate)
+                
+                if Config.Debug then
+                    print(string.format('[GARAGE SYNC] Sent live state for %s', plate))
+                end
+                
+                return
+            end
+        end
+    end
+    
+    if Config.Debug then
+        print(string.format('[GARAGE SYNC] Could not find vehicle %s', plate))
+    end
 end)

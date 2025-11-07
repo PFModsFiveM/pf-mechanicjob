@@ -3,25 +3,32 @@ local QBCore = exports['qb-core']:GetCoreObject()
 -- Preview pads needed/available and how many will be used
 QBCore.Functions.CreateCallback('pf-mechanicjob:server:calcBrakeRepair', function(source, cb, vehNet)
     local Player = QBCore.Functions.GetPlayer(source)
-    if not Player then cb({ error = 'Player not found.' }) return end
+    if not Player then cb(nil) return end
 
     local veh = NetworkGetEntityFromNetworkId(vehNet or -1)
-    if not veh or veh == 0 then cb({ error = 'Vehicle not found.' }) return end
+    if not veh or veh == 0 then cb(nil) return end
 
-    local state = Entity(veh).state
-    local damage = state.partDamage or {}
-    local brakeDmg = tonumber(damage.brakes) or 0
-    if brakeDmg <= 0 then cb({ error = 'Brakes are already in perfect condition.' }) return end
+    local st = Entity(veh).state
+    local pd = st.partDamage or {}
+    local brakeDmg = tonumber(pd.brakes) or 0            -- stored damage percent (0‑100)
 
-    local padsNeeded = (brakeDmg >= 100) and 4 or math.max(1, math.min(4, math.ceil(brakeDmg / 25)))
-    local item = Player.Functions.GetItemByName('brake_pads')
-    local havePads = (item and item.amount) or 0
-    local toUse = math.min(padsNeeded, havePads)
+    local have = 0
+    local itm = Player.Functions.GetItemByName('brake_pads')
+    if itm and itm.amount then have = tonumber(itm.amount) or 0 end
 
-    cb({ padsNeeded = padsNeeded, havePads = havePads, toUse = toUse, brakeDmg = brakeDmg })
+    -- Each pad repairs 25% damage (configurable if needed)
+    local padsNeeded = math.ceil(brakeDmg / 25)
+    local toUse = math.max(0, math.min(padsNeeded, have, 4))
+
+    cb({
+        padsNeeded = padsNeeded,
+        havePads = have,
+        toUse = toUse,
+        brakeDmg = brakeDmg
+    })
 end)
 
--- Apply repair: remove items and update state
+-- Apply repair: remove items and update state, return result
 RegisterNetEvent('pf-mechanicjob:server:applyBrakeRepair', function(vehNet, requestedUse)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
@@ -33,28 +40,38 @@ RegisterNetEvent('pf-mechanicjob:server:applyBrakeRepair', function(vehNet, requ
         return
     end
 
-    local item = Player.Functions.GetItemByName('brake_pads')
-    local havePads = (item and item.amount) or 0
-    local toUse = math.min(4, math.max(0, tonumber(requestedUse) or 0), havePads)
+    local st = Entity(veh).state
+    local pd = st.partDamage or {}
+    local brakeDmg = tonumber(pd.brakes) or 0
+    if brakeDmg <= 0 then
+        TriggerClientEvent('pf-mechanicjob:client:brakeRepairResult', src, 0, 0, 'Brakes already perfect.')
+        return
+    end
+
+    local have = 0
+    local itm = Player.Functions.GetItemByName('brake_pads')
+    if itm and itm.amount then have = tonumber(itm.amount) or 0 end
+
+    local want = math.max(0, tonumber(requestedUse) or 0)
+    local maxCanUse = math.ceil(brakeDmg / 25)
+    local toUse = math.max(0, math.min(want, have, 4, maxCanUse))
+
     if toUse <= 0 then
-        TriggerClientEvent('pf-mechanicjob:client:brakeRepairResult', src, 0, nil, 'No brake pads.')
+        TriggerClientEvent('pf-mechanicjob:client:brakeRepairResult', src, 0, brakeDmg, 'No brake pads.')
         return
     end
 
-    -- Remove items
     if not Player.Functions.RemoveItem('brake_pads', toUse) then
-        TriggerClientEvent('pf-mechanicjob:client:brakeRepairResult', src, 0, nil, 'Failed to remove brake pads.')
+        TriggerClientEvent('pf-mechanicjob:client:brakeRepairResult', src, 0, brakeDmg, 'Failed to remove items.')
         return
     end
-    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['brake_pads'], 'remove', toUse)
+    if QBCore.Shared.Items and QBCore.Shared.Items['brake_pads'] then
+        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['brake_pads'], 'remove', toUse)
+    end
 
-    -- Update vehicle damage server-side
-    local state = Entity(veh).state
-    local damage = state.partDamage or {}
-    local brakeDmg = tonumber(damage.brakes) or 0
-    local newBrakeDmg = math.max(0, brakeDmg - (toUse * 25))
-    damage.brakes = newBrakeDmg
-    state:set('partDamage', damage, true)
+    -- Reduce damage
+    pd.brakes = math.max(0, brakeDmg - (25 * toUse))
+    st:set('partDamage', pd, true)
 
-    TriggerClientEvent('pf-mechanicjob:client:brakeRepairResult', src, toUse, newBrakeDmg, nil)
+    TriggerClientEvent('pf-mechanicjob:client:brakeRepairResult', src, toUse, pd.brakes, nil)
 end)
