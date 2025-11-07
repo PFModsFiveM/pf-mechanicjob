@@ -1,8 +1,119 @@
 Config = Config or {}
 
--- Job / society
-Config.JobName  = 'mechanic'
-Config.Society  = 'mechanic'
+-- ============================================================================
+-- DEBUG & PERMISSIONS
+-- ============================================================================
+Config.Debug = true -- Set to true to see all debug notifications and console logs
+
+-- Jobs allowed to use mechanic items (in addition to 'mechanic')
+Config.AllowedJobs = {
+    'mechanic',
+    'mechanic2',
+    'mechanic3',
+    'bennys',
+    'beeker',
+    -- Add more jobs here as needed
+}
+
+-- Items that ANYONE can use (no job requirement)
+Config.PublicItems = {
+    'repair_kit',
+}
+
+-- ============================================================================
+-- WEAR RATE TUNING
+-- ============================================================================
+Config.WearRates = {
+    -- Brake wear multipliers
+    brakes = {
+        baselineRandomMin = 0.01,      -- Minimum random wear per tick when moving
+        baselineRandomMax = 0.05,      -- Maximum random wear per tick when moving
+        speedExtraStartMPH = 40,       -- Speed threshold where extra wear begins
+        speedExtraScale = 0.004,       -- Wear per MPH above threshold
+        sustainedBrakeInterval = 5000, -- MS holding brake for bonus wear
+        sustainedBonus = 0.40,         -- Extra wear for sustained braking
+        steeringAngleWearStart = 12.0, -- Degrees where cornering wear begins
+        steeringAngleScale = 0.02,     -- Wear per degree above threshold
+        handbrakePerTick = 0.35,       -- Wear per tick when handbrake is held
+        burnoutExtra = 2.50,           -- Extra wear during burnouts (W+S)
+        heatIncreasePerWear = 14,      -- Heat units gained per 1% wear
+        heatDecayPerTick = 18,         -- Heat units lost per tick when not braking
+        heatWearScale = 0.0009,        -- Extra wear = heat * scale
+        downhillDecelThreshold = -0.65, -- Forward deceleration threshold
+        downhillBonus = 0.30,          -- Extra wear on steep downhills
+    },
+    
+    -- Radiator wear
+    radiator = {
+        bodyDamageScale = 0.08,        -- Wear per tick when body < 80%
+        collisionDamage = 1.2,         -- Damage per collision at speed
+        waterIngestionRate = 0.6,      -- Damage per tick in water
+    },
+    
+    -- Coolant consumption
+    coolant = {
+        speedThreshold = 80.0,         -- MPH where loss begins
+        speedLossBase = 0.05,          -- Base loss above threshold
+        speedLossScale = 0.008,        -- Extra loss per MPH
+        tempThreshold = 110.0,         -- Engine temp where loss accelerates
+        tempLossScale = 0.04,          -- Loss per degree above threshold
+        radiatorDamageThreshold = 40,  -- Radiator % where loss accelerates
+        radiatorLossScale = 0.02,      -- Loss based on radiator damage
+        waterContamination = 0.30,     -- Loss per tick in water
+    },
+    
+    -- Suspension & Axle
+    suspension = {
+        airtimeSpeedThreshold = 15.0,  -- Speed when airborne causes damage
+        airtimeScale = 0.80,           -- Damage per tick airborne (scaled by speed)
+        suspensionAirtimeScale = 0.60, -- Suspension-specific airtime damage
+        highSpeedWear = 0.08,          -- Wear per tick above 60 MPH
+        mudWear = 0.35,                -- Wear per tick in mud
+    },
+    
+    axle = {
+        mudWear = 0.25,                -- Wear per tick in mud
+    },
+    
+    -- Spark plugs
+    sparkplugs = {
+        mileagePerPercent = 250.0,     -- Miles needed for 1% damage
+        overheatingTempThreshold = 120.0, -- Temp where damage begins
+        overheatingScale = 0.03,       -- Damage per degree above threshold
+        fireDamage = 3.5,              -- Damage per tick when on fire
+        misfireThreshold = 50,         -- Damage % where misfires cause extra wear
+        misfireChance = 8,             -- % chance per tick to misfire
+        misfireDamage = 0.50,          -- Extra damage per misfire
+        oilLeakThreshold = 30,         -- Oil health % where plugs suffer
+        oilLeakScale = 0.02,           -- Damage based on low oil
+    },
+}
+
+-- ============================================================================
+-- JOB / SOCIETY (DYNAMIC)
+-- ============================================================================
+-- Helper function to check if a job is a mechanic job
+function Config.IsMechanicJob(jobName)
+    for _, j in ipairs(Config.AllowedJobs) do if j == jobName then return true end end
+    return false
+end
+-- Get business key for a specific job (used for database lookups)
+function Config.GetBusinessKey(jobName)
+    local map = { mechanic='mechanic', mechanic2='mechanic2', mechanic3='mechanic3', bennys='bennys', beeker='beeker' }
+    return map[jobName] or jobName
+end
+
+-- Default branding per business (used for initial seed)
+Config.BusinessBranding = {
+  mechanic = { business='mechanic', name='LS Customs', primary_color='#0BA378', secondary_color='#0B2E44', logo='', tax=0.05, open=1 },
+  mechanic2= { business='mechanic2', name='LS Customs #2', primary_color='#0BA378', secondary_color='#0B2E44', logo='', tax=0.05, open=1 },
+  mechanic3= { business='mechanic3', name='LS Customs #3', primary_color='#0BA378', secondary_color='#0B2E44', logo='', tax=0.05, open=1 },
+  bennys   = { business='bennys',   name="Benny's Original Motor Works", primary_color='#8B0000', secondary_color='#2E0000', logo='', tax=0.05, open=1 },
+  beeker   = { business='beeker',   name="Beeker's Garage", primary_color='#FF8C00', secondary_color='#3D2000', logo='', tax=0.05, open=1 },
+}
+Config.JobName = 'mechanic'
+Config.Society = 'mechanic'
+Config.DEFAULT_BRANDING = Config.BusinessBranding.mechanic
 
 -- Tablet item(s)
 Config.TabletItems = { 'mech_tablet', 'mechanic_tablet' }
@@ -63,138 +174,52 @@ Config.PaintPalette = {
   green = { r=20,  g=150, b=80  },
 }
 
--- Which cosmetic items map to which mod types (client uses this)
+-- Minimal Item->mod mapping used by client/main.lua
 Config.ItemModMap = {
-  bumper         = {1,2},         -- front & rear
-  vehicle_bumper = {1,2},
-  exhaust        = {4},
-  hood           = {7},
-  roof           = {10},
-  skirts         = {3},
-  spoiler        = {0},
+  bumper={1,2}, vehicle_bumper={1,2}, exhaust={4}, hood={7}, roof={10}, skirts={3}, spoiler={0},
 }
 
--- Vehicle Diagnostics Configuration
-Config.DiagnosticParts = {
-    engine = {
-        sparkplugs = { label = "Spark Plugs", max = 8 },
-        carbattery = { label = "Car Battery", max = 1 },
-        engine_oil = { label = "Engine Oil", max = 1 },
-        oil_filter = { label = "Oil Filter", max = 1 }
-    },
-    suspension = {
-        susp_arm = { label = "Suspension Arms", max = 4 },
-        axleparts = { label = "Axle Components", max = 4 }
-    }
-}
-
--- Part rules update (replace existing PartRules section)
+-- Deduped PartRules (unique keys only)
 Config.PartRules = {
-    -- Repair Components
-    sparkplugs = { action = 'repair', type = 'sparkplugs', zone = 'front' },
-    carbattery = { action = 'repair', type = 'battery', zone = 'front' },
-    engine_oil = { action = 'repair', type = 'oil', zone = 'front', radius = 4.0 },
-    oil_filter = { action = 'repair', type = 'oil', zone = 'front', radius = 4.0 },
-    susp_arm = { action = 'repair', type = 'suspension', zone = 'wheel' },
-    axleparts = { action = 'repair', type = 'axle', zone = 'under' },
-
-  -- NPC job parts
-  engine_oil  = { action='oil',   zone='front',   radius=4.0 },
-  oil_filter  = { action='oil',   zone='front',   radius=4.0 },
-  brake_pads  = { action='brake', zone='wheel' },
-  susp_arm    = { action='susp',  zone='wheel' },
-  tire_new    = { action='tire',  zone='wheel' },
-  paint_kit   = { action='paint', zone='exterior',npcOnly=true },
-
-  -- General player repairs
-  engine_part = { action='engine', zone='under'    },
-  body_part   = { action='body',   zone='exterior' },
-  sparkplugs  = { action='engine', zone='front'    },
-  carbattery  = { action='engine', zone='front'    },
-  axleparts   = { action='susp',   zone='under'    },
-
-  -- Cosmetics/performance (player vehicles)
-  bumper         = { action='setMod', zone='exterior' },
-  vehicle_bumper = { action='setMod', zone='exterior' },
-  exhaust        = { action='setMod', zone='exterior' },
-  hood           = { action='setMod', zone='exterior' },
-  roof           = { action='setMod', zone='exterior' },
-  skirts         = { action='setMod', zone='exterior' },
-  spoiler        = { action='setMod', zone='exterior' },
-
-  -- Engine upgrades
-  engine1 = { action = 'upgrade', modType = 11, modIndex = 0, zone = 'front' },
-  engine2 = { action = 'upgrade', modType = 11, modIndex = 1, zone = 'front' },
-  engine3 = { action = 'upgrade', modType = 11, modIndex = 2, zone = 'front' },
-  engine4 = { action = 'upgrade', modType = 11, modIndex = 3, zone = 'front' },
-  engine5 = { action = 'upgrade', modType = 11, modIndex = 4, zone = 'front' },
-
-  -- Brake upgrades
-  brakes1 = { action = 'upgrade', modType = 12, modIndex = 0, zone = 'wheel' },
-  brakes2 = { action = 'upgrade', modType = 12, modIndex = 1, zone = 'wheel' },
-  brakes3 = { action = 'upgrade', modType = 12, modIndex = 2, zone = 'wheel' },
-
-  -- Transmission upgrades
-  transmission1 = { action = 'upgrade', modType = 13, modIndex = 0, zone = 'under' },
-  transmission2 = { action = 'upgrade', modType = 13, modIndex = 1, zone = 'under' },
-  transmission3 = { action = 'upgrade', modType = 13, modIndex = 2, zone = 'under' },
-
-  -- Suspension upgrades
-  suspension1 = { action = 'upgrade', modType = 15, modIndex = 0, zone = 'under' },
-  suspension2 = { action = 'upgrade', modType = 15, modIndex = 1, zone = 'under' },
-  suspension3 = { action = 'upgrade', modType = 15, modIndex = 2, zone = 'under' },
-  suspension4 = { action = 'upgrade', modType = 15, modIndex = 3, zone = 'under' },
-
-  -- Armor upgrades (mod index 16)
-  armor1 = { action = 'upgrade', modType = 16, modIndex = 0, zone = 'exterior' },
-  armor2 = { action = 'upgrade', modType = 16, modIndex = 1, zone = 'exterior' },
-  armor3 = { action = 'upgrade', modType = 16, modIndex = 2, zone = 'exterior' },
-  armor4 = { action = 'upgrade', modType = 16, modIndex = 3, zone = 'exterior' },
-  armor5 = { action = 'upgrade', modType = 16, modIndex = 4, zone = 'exterior' },
-
-  -- Turbo (mod index 18)
-  turbo = { action = 'turbo', modType = 18, zone = 'front' },
-
-  -- Repair parts
-  engine_part = { action = 'repair', type = 'engine', max_items = 5, zone = 'front' },
-  carbattery = { action = 'repair', type = 'battery', max_items = 1, zone = 'front' },
-  sparkplugs = { action = 'repair', type = 'sparkplugs', max_items = 8, zone = 'front' },
-  axleparts = { action = 'repair', type = 'axle', max_items = 4, zone = 'under' },
-  newoil = { action = 'repair', type = 'oil', max_items = 1, zone = 'front' },
-  brakes1 = { action = 'upgrade', type = 'brakes', level = 1, zone = 'wheel' },
-  brakes2 = { action = 'upgrade', type = 'brakes', level = 2, zone = 'wheel' },
-  brakes3 = { action = 'upgrade', type = 'brakes', level = 3, zone = 'wheel' },
+  -- Repairs
+  engine_part = { action='repair', type='engine',      zone='front',  max_items=5 },
+  carbattery  = { action='repair', type='battery',     zone='front',  max_items=1 },
+  sparkplugs  = { action='repair', type='sparkplugs',  zone='front',  max_items=8 },
+  engine_oil  = { action='repair', type='oil',         zone='front',  radius=4.0, max_items=1 },
+  oil_filter  = { action='repair', type='oil_filter',  zone='front',  radius=4.0, max_items=1 },
+  brake_pads  = { action='repair', type='brakes',      zone='wheel',  max_items=4 },
+  susp_arm    = { action='repair', type='suspension',  zone='wheel',  max_items=4 },
+  axleparts   = { action='repair', type='axle',        zone='under',  max_items=4 },
+  -- Cosmetics/perf
+  bumper={ action='setMod', zone='exterior' }, vehicle_bumper={ action='setMod', zone='exterior' },
+  exhaust={ action='setMod', zone='exterior' }, hood={ action='setMod', zone='exterior' },
+  roof={ action='setMod', zone='exterior' }, skirts={ action='setMod', zone='exterior' },
+  spoiler={ action='setMod', zone='exterior' },
+  -- Upgrades
+  engine1={ action='upgrade', modType=11, modIndex=0, zone='front' },
+  engine2={ action='upgrade', modType=11, modIndex=1, zone='front' },
+  engine3={ action='upgrade', modType=11, modIndex=2, zone='front' },
+  engine4={ action='upgrade', modType=11, modIndex=3, zone='front' },
+  engine5={ action='upgrade', modType=11, modIndex=4, zone='front' },
+  brakes1={ action='upgrade', modType=12, modIndex=0, zone='wheel' },
+  brakes2={ action='upgrade', modType=12, modIndex=1, zone='wheel' },
+  brakes3={ action='upgrade', modType=12, modIndex=2, zone='wheel' },
+  transmission1={ action='upgrade', modType=13, modIndex=0, zone='under' },
+  transmission2={ action='upgrade', modType=13, modIndex=1, zone='under' },
+  transmission3={ action='upgrade', modType=13, modIndex=2, zone='under' },
+  suspension1={ action='upgrade', modType=15, modIndex=0, zone='under' },
+  suspension2={ action='upgrade', modType=15, modIndex=1, zone='under' },
+  suspension3={ action='upgrade', modType=15, modIndex=2, zone='under' },
+  suspension4={ action='upgrade', modType=15, modIndex=3, zone='under' },
+  armor1={ action='upgrade', modType=16, modIndex=0, zone='exterior' },
+  armor2={ action='upgrade', modType=16, modIndex=1, zone='exterior' },
+  armor3={ action='upgrade', modType=16, modIndex=2, zone='exterior' },
+  armor4={ action='upgrade', modType=16, modIndex=3, zone='exterior' },
+  armor5={ action='upgrade', modType=16, modIndex=4, zone='exterior' },
+  turbo={ action='turbo', modType=18, zone='front' },
 }
 
--- Damage thresholds for vehicle behavior
-Config.DamageThresholds = {
-  battery = {
-    dead = 90, -- Won't start at all above this damage %
-    cranking = 70, -- Will have trouble starting above this %
-    struggling = 40, -- Will shut off occasionally above this %
-  },
-  engine = {
-    dead = 80, -- Won't start above this damage %
-    struggling = 50, -- Will run poorly above this %
-    items_needed = { -- How many engine parts needed based on damage
-      [80] = 5, -- 80-100% damage needs 5 parts
-      [60] = 4, -- 60-79% damage needs 4 parts
-      [40] = 3, -- 40-59% damage needs 3 parts
-      [20] = 2, -- 20-39% damage needs 2 parts
-      [1] = 1,  -- 1-19% damage needs 1 part
-    }
-  }
-}
-
--- Action times (ms) for the progress bar
+-- Action timing used by client/main.lua
 Config.ActionTimes = {
-  inspection = 10000,    -- Vehicle inspection time
-  setMod = 4500,
-  oil    = 5500,     -- oil & oil filter
-  engine = 5500,
-  body   = 5000,
-  brake  = 6500,
-  susp   = 8000,
-  tire   = 7000,
-  paint  = 9000,
+  inspection=10000, setMod=4500, oil=5500, engine=5500, body=5000, brake=6500, susp=8000, tire=7000, paint=9000,
 }

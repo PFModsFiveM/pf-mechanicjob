@@ -27,7 +27,10 @@ shared_scripts {
 client_scripts {
   'client/tools_menu.lua', -- Load FIRST to define helper functions
   'client/damage.lua',
-  'client/*.lua'
+  'client/main.lua',
+  'client/minigames.lua',
+  'client/cosmetics.lua',
+  'client/garage_sync.lua'  -- NEW
 }
 
 server_scripts {
@@ -35,7 +38,8 @@ server_scripts {
   'server/main.lua',
   'server/repair.lua',
   'server/useables.lua',
-  'server/consumables.lua'
+  'server/consumables.lua',
+  'server/garage_sync.lua'  -- NEW
 }
 
 dependencies {

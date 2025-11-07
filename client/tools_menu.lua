@@ -2,24 +2,33 @@ local QBCore = exports['qb-core']:GetCoreObject()
 
 print('[TOOLS_MENU] Client script loaded') -- Debug: confirm file loads
 
--- Helper: Get vehicle damage (same logic as damage.lua)
+-- Helper: Get vehicle damage
 local function getVehicleDamage(veh)
     if not veh or not DoesEntityExist(veh) then return nil end
     local state = Entity(veh)
     if not state or not state.state then return nil end
     local damage = state.state.partDamage or {}
     damage.brakes = damage.brakes or 0
+    damage.fuel_injector = damage.fuel_injector or 0
+    damage.powersteeringpump = damage.powersteeringpump or 0
+    damage.radiator = damage.radiator or 0
+    damage.power_steering_fluid = damage.power_steering_fluid or 0
+    damage.transmissionfluid = damage.transmissionfluid or 0
+    damage.brakefluid = damage.brakefluid or 0
+    damage.coolant = damage.coolant or 0
+    damage.alternator = damage.alternator or 0
+    damage.sparkplugs = damage.sparkplugs or 0
+    damage.carbattery = damage.carbattery or 0
+    damage.oil = damage.oil or 0             -- make sure oil key always present
+    damage.oil_filter = damage.oil_filter or 0
+    damage.brakes = damage.brakes or 0
+    damage.suspension = damage.suspension or 0
+    damage.axle = damage.axle or 0
     return damage
 end
 
--- Helper: Calculate pads needed (same logic as damage.lua)
-local function calcPadsNeeded(brakeDmg)
-    if brakeDmg <= 0 then return 0 end
-    return math.min(4, math.ceil(brakeDmg / 25))
-end
-
--- Helper: Get nearest vehicle
-local function getRepairVehicle()
+-- Helper: get usable vehicle (in or near player)
+function getRepairVehicle()
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
         local veh = GetVehiclePedIsIn(ped, false)
@@ -31,165 +40,28 @@ local function getRepairVehicle()
     return nil
 end
 
--- NEW: Vehicle inspection with door control and clipboard prop
-RegisterNetEvent('pf-mechanicjob:client:inspectVehicle', function()
-    print('[TOOLS DEBUG] inspectVehicle event fired') -- Debug
-    
-    local veh = getRepairVehicle()
-    if not veh then 
-        print('[TOOLS DEBUG] No vehicle found') -- Debug
-        QBCore.Functions.Notify('No vehicle found nearby.', 'error')
-        return 
+-- Helper: request control before mutating entity state
+function ensureControl(entity, timeoutMs)
+    if not entity or entity == 0 then return false end
+    local start = GetGameTimer()
+    while not NetworkHasControlOfEntity(entity) and (GetGameTimer() - start) < (timeoutMs or 700) do
+        NetworkRequestControlOfEntity(entity)
+        Wait(0)
     end
+    return NetworkHasControlOfEntity(entity)
+end
 
-    print('[TOOLS DEBUG] Vehicle found, starting inspection') -- Debug
-
-    local ped = PlayerPedId()
-    local clipboardObj = nil
-    
-    -- Open all doors during inspection
-    for i = 0, 7 do
-        SetVehicleDoorOpen(veh, i, false, false)
-    end
-    print('[TOOLS DEBUG] Doors opened') -- Debug
-
-    -- Load welding animation (NOT clipboard yet)
-    local weldDict = 'mini@repair'
-    local weldAnim = 'fixing_a_ped'
-    
-    RequestAnimDict(weldDict)
-    while not HasAnimDictLoaded(weldDict) do Wait(10) end
-    
-    -- Start welding animation FIRST
-    TaskPlayAnim(ped, weldDict, weldAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
-    print('[TOOLS DEBUG] Welding animation started') -- Debug
-    
-    -- Use QBCore progressbar (most compatible)
-    local progressSuccess = false
+-- Helper: progress bar helper
+function doMechanicAction(label, ms)
     if QBCore.Functions.Progressbar then
-        print('[TOOLS DEBUG] Using QBCore progressbar')
-        
-        local inspectionComplete = nil  -- nil = waiting, true = success, false = cancelled
-        
-        QBCore.Functions.Progressbar(
-            'vehicle_inspection',
-            'Inspecting vehicle...',
-            10000,
-            false,
-            true,
-            {
-                disableMovement = true,
-                disableCarMovement = true,
-                disableMouse = false,
-                disableCombat = true,
-            },
-            {},
-            {},
-            {},
-            function() -- success
-                inspectionComplete = true
-                print('[TOOLS DEBUG] Inspection complete - SUCCESS')
-            end,
-            function() -- cancel
-                inspectionComplete = false
-                print('[TOOLS DEBUG] Inspection cancelled')
-            end
-        )
-        
-        -- Wait for progress to complete (nil = still running)
-        while inspectionComplete == nil do
-            Wait(100)
-        end
-        
-        -- Stop welding animation
-        ClearPedTasks(ped)
-        print('[TOOLS DEBUG] Welding animation stopped')
-        
-        -- Close all doors
-        if DoesEntityExist(veh) then
-            for i = 0, 7 do
-                SetVehicleDoorShut(veh, i, false)
-            end
-        end
-        
-        -- Only open menu if inspection completed successfully
-        if inspectionComplete == true then
-            Wait(200) -- Brief pause before showing clipboard
-            
-            -- NOW load and show clipboard
-            local clipboardModel = `p_amb_clipboard_01`
-            local clipboardDict = 'missfam4'
-            local clipboardAnim = 'base'
-            
-            RequestModel(clipboardModel)
-            while not HasModelLoaded(clipboardModel) do Wait(10) end
-            
-            RequestAnimDict(clipboardDict)
-            while not HasAnimDictLoaded(clipboardDict) do Wait(10) end
-            
-            -- Create clipboard prop
-            clipboardObj = CreateObject(clipboardModel, 0.0, 0.0, 0.0, true, true, false)
-            local boneIndex = GetPedBoneIndex(ped, 18905) -- Left hand bone
-            AttachEntityToEntity(clipboardObj, ped, boneIndex, 0.10, 0.02, 0.08, -130.0, -50.0, 0.0, true, true, false, true, 1, true)
-            
-            -- Play clipboard animation
-            TaskPlayAnim(ped, clipboardDict, clipboardAnim, 8.0, -8.0, -1, 50, 0, false, false, false)
-            
-            print('[TOOLS DEBUG] Clipboard shown, opening menu')
-            Wait(300) -- Let clipboard animation settle
-            
-            -- Store clipboard object globally so we can clean it up when menu closes
-            currentClipboard = clipboardObj
-            
-            TriggerEvent('pf-mechanicjob:client:openToolsMenu')
-        else
-            QBCore.Functions.Notify('Inspection cancelled.', 'error')
-        end
-        
-        progressSuccess = true
+        QBCore.Functions.Progressbar('pf_mech_repair', label or 'Working...', ms or 2000, false, true, {
+            disableMovement = true, disableCarMovement = true, disableMouse = false, disableCombat = true,
+        }, {
+            animDict = 'mini@repair', anim = 'fixing_a_ped', flags = 49,
+        }, {}, {}, function() end, function() end)
+    else
+        Wait(ms or 2000)
     end
-
-    if not progressSuccess then
-        print('[TOOLS DEBUG] Using fallback countdown')
-        -- Fallback: simple 10 second countdown
-        local startTime = GetGameTimer()
-        local duration = 10000
-        
-        CreateThread(function()
-            while GetGameTimer() - startTime < duration do
-                local remaining = math.ceil((duration - (GetGameTimer() - startTime)) / 1000)
-                DrawText2D(0.5, 0.9, ('Inspecting vehicle... %ds'):format(remaining), 0.5)
-                Wait(0)
-            end
-            
-            ClearPedTasks(ped)
-            print('[TOOLS DEBUG] Inspection complete')
-            
-            if DoesEntityExist(veh) then
-                for i = 0, 7 do
-                    SetVehicleDoorShut(veh, i, false)
-                end
-            end
-            
-            Wait(500)
-            TriggerEvent('pf-mechanicjob:client:openToolsMenu')
-        end)
-    end
-end)
-
--- Helper: Draw 2D text on screen
-function DrawText2D(x, y, text, scale)
-    SetTextFont(4)
-    SetTextProportional(0)
-    SetTextScale(scale, scale)
-    SetTextColour(255, 255, 255, 255)
-    SetTextDropShadow(0, 0, 0, 0, 255)
-    SetTextEdge(1, 0, 0, 0, 255)
-    SetTextDropShadow()
-    SetTextOutline()
-    SetTextEntry("STRING")
-    AddTextComponentString(text)
-    DrawText(x, y)
 end
 
 -- Helper: Calculate parts needed for repair
@@ -204,14 +76,23 @@ local function partsNeededForRepair(partKey, healthPercent)
         if rule.type == 'battery' then maxItems = 1 end
         if rule.type == 'axle' then maxItems = 4 end
         if partKey == 'tire_new' then maxItems = 4 end
-        if rule.type == 'oil' then maxItems = 1 end
+        if rule.type == 'oil' or partKey == 'engine_oil' then maxItems = 1 end
+        if rule.type == 'oil_filter' or partKey == 'oil_filter' then maxItems = 1 end
         if partKey == 'brakes' then maxItems = 4 end
+        if partKey == 'fuel_injector' then maxItems = 4 end
+        if partKey == 'powersteeringpump' then maxItems = 1 end
+        if partKey == 'radiator' then maxItems = 1 end
+        if partKey == 'power_steering_fluid' then maxItems = 1 end
+        if partKey == 'transmissionfluid' then maxItems = 1 end
+        if partKey == 'brakefluid' then maxItems = 1 end
+        if partKey == 'coolant' then maxItems = 1 end
     end
 
     healthPercent = math.max(0, math.min(100, tonumber(healthPercent) or 0))
 
     if maxItems <= 0 then return 0 end
     local missingPercent = 100 - healthPercent
+    -- Use ceiling so any damage > 0 requires at least 1 item for single-item parts
     local needed = math.ceil((missingPercent / 100) * maxItems)
     return math.max(0, math.min(needed, maxItems))
 end
@@ -227,26 +108,124 @@ local DiagnosticLabels = {
     axleparts = "Axle Parts",
     engine_part = "Engine Part",
     body_part = "Body Panel",
-    tire_new = "Tire"
+    tire_new = "Tire",
+    fuel_injector = "Fuel Injector",
+    powersteeringpump = "Power Steering Pump",
+    radiator = "Radiator",
+    power_steering_fluid = "Power Steering Fluid",
+    transmissionfluid = "Transmission Fluid",
+    brakefluid = "Brake Fluid",
+    coolant = "Coolant"
 }
 
--- Open Mechanic Tools menu (FULL DIAGNOSTICS)
+-- NEW: Map part keys to item image filenames
+local DiagnosticImages = {
+    alternator = 'alternator.png',
+    sparkplugs = 'sparkplugs.png',
+    carbattery = 'carbattery.png',
+    engine_oil = 'engine_oil.png',
+    oil_filter = 'oil_filter.png',
+    brakes = 'brake_pads.png',
+    susp_arm = 'susp_arm.png',
+    axleparts = 'axleparts.png',
+    engine_part = 'engine_part.png',
+    body_part = 'body_part.png',
+    tire_new = 'tire_new.png',
+    fuel_injector = 'fuel_injector.png',
+    powersteeringpump = 'powersteeringpump.png',
+    radiator = 'radiator.png',
+    power_steering_fluid = 'power_steering_fluid.png',
+    transmissionfluid = 'transmissionfluid.png',
+    brakefluid = 'brakefluid.png',
+    coolant = 'coolant.png'
+}
+
+-- Register the openToolsMenu event
 RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
+    print('[TOOLS DEBUG] openToolsMenu event received')
+    
     local veh = getRepairVehicle()
     if not veh then
         QBCore.Functions.Notify('No vehicle nearby', 'error')
         return
     end
 
-    -- Get vehicle health
+    -- Start clipboard inspection animation
+    local ped = PlayerPedId()
+    local clipboardDict = "missheistdockssetup1clipboard@base"
+    local clipboardAnim = "base"
+    local clipboardProp = `prop_notepad_01`
+
+    RequestAnimDict(clipboardDict)
+    while not HasAnimDictLoaded(clipboardDict) do Wait(10) end
+    
+    RequestModel(clipboardProp)
+    while not HasModelLoaded(clipboardProp) do Wait(10) end
+
+    currentClipboard = CreateObject(clipboardProp, 0.0, 0.0, 0.0, true, true, false)
+    local bone = GetPedBoneIndex(ped, 18905)
+    AttachEntityToEntity(currentClipboard, ped, bone, 0.1, 0.02, 0.05, -50.0, 90.0, 0.0, true, true, false, true, 1, true)
+    
+    TaskPlayAnim(ped, clipboardDict, clipboardAnim, 8.0, -8.0, -1, 50, 0, false, false, false)
+
+    if not QBCore.Functions.Progressbar then
+        QBCore.Functions.Notify('Progressbar not available', 'error')
+        ClearPedTasks(ped)
+        if currentClipboard then DeleteEntity(currentClipboard) end
+        currentClipboard = nil
+        return
+    end
+
+    QBCore.Functions.Progressbar(
+        'inspect_vehicle',
+        'Inspecting vehicle...',
+        10000,
+        false,
+        true,
+        {
+            disableMovement = true,
+            disableCarMovement = true,
+            disableMouse = false,
+            disableCombat = true,
+        },
+        {},
+        {},
+        {},
+        function() -- success
+            ClearPedTasks(ped)
+            if currentClipboard then
+                DeleteEntity(currentClipboard)
+                currentClipboard = nil
+            end
+            TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
+        end,
+        function() -- cancel
+            ClearPedTasks(ped)
+            if currentClipboard then
+                DeleteEntity(currentClipboard)
+                currentClipboard = nil
+            end
+            QBCore.Functions.Notify('Inspection cancelled', 'error')
+        end
+    )
+end)
+
+-- Show diagnostics menu after inspection completes
+RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
+    if not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('Vehicle not found', 'error')
+        return
+    end
+
     local engineHealth = math.floor(math.max(0, math.min(1000, GetVehicleEngineHealth(veh) or 0)) / 10)
     local bodyHealth = math.floor(math.max(0, math.min(1000, GetVehicleBodyHealth(veh) or 0)) / 10)
     local tankHealth = math.floor(math.max(0, math.min(1000, GetVehiclePetrolTankHealth(veh) or 0)) / 10)
     
-    -- Get part damage
-    local damage = getVehicleDamage(veh) or {}
+    -- FIX: Get damage from entity state correctly
+    local state = Entity(veh).state
+    local damage = state.partDamage or {}
     
-    -- Calculate health percentages (health = 100 - damage)
+    -- Calculate health percentages (100 - damage)
     local health = {}
     health.alternator = math.floor(100 - (tonumber(damage.alternator) or 0))
     health.sparkplugs = math.floor(100 - (tonumber(damage.sparkplugs) or 0))
@@ -258,18 +237,29 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
     health.axleparts = math.floor(100 - (tonumber(damage.axle) or 0))
     health.engine_overall = engineHealth
     health.body_overall = bodyHealth
+    health.fuel_injector = math.floor(100 - (tonumber(damage.fuel_injector) or 0))
+    health.powersteeringpump = math.floor(100 - (tonumber(damage.powersteeringpump) or 0))
+    health.radiator = math.floor(100 - (tonumber(damage.radiator) or 0))
+    health.power_steering_fluid = math.floor(100 - (tonumber(damage.power_steering_fluid) or 0))
+    health.transmissionfluid = math.floor(100 - (tonumber(damage.transmissionfluid) or 0))
+    health.brakefluid = math.floor(100 - (tonumber(damage.brakefluid) or 0))
+    health.coolant = math.floor(100 - (tonumber(damage.coolant) or 0))
+
+    -- Debug print to verify values
+    if Config.Debug then
+        print('[TOOLS DEBUG] Raw damage state:', json.encode(damage))
+        print('[TOOLS DEBUG] Calculated health:', json.encode(health))
+    end
 
     local menu = {
         { header = 'Vehicle Diagnostics', txt = GetVehicleNumberPlateText(veh) or 'Unknown', isMenuHeader = true },
         { header = 'Overall Condition', txt = string.format('Engine %d%% • Body %d%% • Tank %d%%', engineHealth, bodyHealth, tankHealth), isMenuHeader = true }
     }
 
-    -- Helper to add part entries
     local function addPartEntry(ruleKey, label, hp)
         hp = math.floor(tonumber(hp) or 0)
         hp = math.max(0, math.min(100, hp))
         
-        -- Only show "Needs:" if health is below 100%
         local txt
         if hp >= 100 then
             txt = 'Perfect condition'
@@ -279,34 +269,37 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
             txt = string.format('Needs: %d parts', needed)
         end
         
+        local img = DiagnosticImages[ruleKey] or nil
+        
         menu[#menu+1] = {
             header = string.format('%s — %d%%', label, hp),
             txt = txt,
-            params = {}
+            icon = img,
+            params = hp < 100 and {
+                event = 'pf-mechanicjob:client:repairPart',
+                args = { vehicle = veh, part = ruleKey, needed = partsNeededForRepair(ruleKey, hp) }
+            } or {}
         }
     end
 
-    -- Engine & Body
     addPartEntry('engine_part', DiagnosticLabels.engine_part or 'Engine', health.engine_overall)
     addPartEntry('body_part', DiagnosticLabels.body_part or 'Body', health.body_overall)
-
-    -- Electrical System
     addPartEntry('alternator', DiagnosticLabels.alternator, health.alternator)
     addPartEntry('carbattery', DiagnosticLabels.carbattery, health.carbattery)
-
-    -- Engine Components
     addPartEntry('sparkplugs', DiagnosticLabels.sparkplugs, health.sparkplugs)
     addPartEntry('engine_oil', DiagnosticLabels.engine_oil, health.engine_oil)
     addPartEntry('oil_filter', DiagnosticLabels.oil_filter, health.oil_filter)
-
-    -- Braking System
     addPartEntry('brakes', DiagnosticLabels.brakes, health.brakes)
-
-    -- Suspension / Axle
     addPartEntry('susp_arm', DiagnosticLabels.susp_arm, health.susp_arm)
     addPartEntry('axleparts', DiagnosticLabels.axleparts, health.axleparts)
+    addPartEntry('fuel_injector', DiagnosticLabels.fuel_injector, health.fuel_injector)
+    addPartEntry('powersteeringpump', DiagnosticLabels.powersteeringpump, health.powersteeringpump)
+    addPartEntry('radiator', DiagnosticLabels.radiator, health.radiator)
+    addPartEntry('power_steering_fluid', DiagnosticLabels.power_steering_fluid, health.power_steering_fluid)
+    addPartEntry('transmissionfluid', DiagnosticLabels.transmissionfluid, health.transmissionfluid)
+    addPartEntry('brakefluid', DiagnosticLabels.brakefluid, health.brakefluid)
+    addPartEntry('coolant', DiagnosticLabels.coolant, health.coolant)
 
-    -- Tires
     local burstCount = 0
     local wheelNames = { [0]='Front Left', [1]='Front Right', [2]='Rear Left', [3]='Rear Right', [4]='Middle Left', [5]='Middle Right' }
     
@@ -342,7 +335,125 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
     end
 end)
 
--- NEW: Clean up clipboard when menu closes
+-- Repair part handler
+RegisterNetEvent('pf-mechanicjob:client:repairPart', function(data)
+    local vehicle = data.vehicle
+    local part = data.part
+    local needed = tonumber(data.needed) or 1
+
+    if not DoesEntityExist(vehicle) then return end
+
+    local label = DiagnosticLabels[part] or part
+
+    local itemMap = {
+        engine_part = 'engine_part',
+        body_part = 'body_part',
+        carbattery = 'carbattery',
+        sparkplugs = 'sparkplugs',
+        alternator = 'alternator',
+        engine_oil = 'engine_oil',
+        oil_filter = 'oil_filter',
+        brakes = 'brake_pads',
+        susp_arm = 'susp_arm',
+        axleparts = 'axleparts',
+        tire_new = 'tire_new',
+        fuel_injector = 'fuel_injector',
+        powersteeringpump = 'powersteeringpump',
+        radiator = 'radiator',
+        power_steering_fluid = 'power_steering_fluid',
+        transmissionfluid = 'transmissionfluid',
+        brakefluid = 'brakefluid',
+        coolant = 'coolant'
+    }
+
+    local itemName = itemMap[part] or part
+
+    if not QBCore.Functions.Progressbar then
+        QBCore.Functions.Notify('Progressbar not available', 'error')
+        return
+    end
+
+    QBCore.Functions.Progressbar(
+        'repair_part',
+        string.format('Replacing %s...', label),
+        5000,
+        false,
+        true,
+        {
+            disableMovement = true,
+            disableCarMovement = true,
+            disableMouse = false,
+            disableCombat = true,
+        },
+        {
+            animDict = 'mini@repair',
+            anim = 'fixing_a_ped',
+            flags = 49,
+        },
+        {},
+        {},
+        function() -- success
+            QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
+                if success then
+                    QBCore.Functions.Notify(msg or 'Repair successful', 'success')
+                else
+                    QBCore.Functions.Notify(msg or 'Missing required parts', 'error')
+                end
+            end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, nil)
+        end,
+        function() -- cancel
+            QBCore.Functions.Notify('Repair cancelled', 'error')
+        end
+    )
+end)
+
+-- Repair kit logic
+RegisterNetEvent('pf-mechanicjob:client:useRepairKit', function()
+    local veh = getRepairVehicle()
+    if not veh then QBCore.Functions.Notify('No vehicle nearby', 'error'); return end
+    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle', 'error'); return end
+
+    -- Consume first to validate item exists
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then
+            QBCore.Functions.Notify('No repair kit found', 'error')
+            return
+        end
+
+        -- Mechanic animation + progress
+        doMechanicAction('Using repair kit...', 5000)
+
+        local damage = getVehicleDamage(veh) or {}
+        local changed = false
+
+        -- +20% health to alternator/battery if under 30% health (i.e. >70% damage)
+        if (100 - (tonumber(damage.alternator) or 0)) < 30 then
+            damage.alternator = math.max(0, (tonumber(damage.alternator) or 0) - 20)
+            changed = true
+        end
+        if (100 - (tonumber(damage.carbattery) or 0)) < 30 then
+            damage.carbattery = math.max(0, (tonumber(damage.carbattery) or 0) - 20)
+            changed = true
+        end
+
+        -- Engine: add ~20% to engine health if below 70%
+        local eng = GetVehicleEngineHealth(veh)
+        if eng < 700 then
+            SetVehicleEngineHealth(veh, math.min(1000.0, eng + 200.0))
+            changed = true
+        end
+
+        if changed then
+            -- replace direct state:set
+            SafeStateSet(veh, 'partDamage', damage)
+            QBCore.Functions.Notify('Repair kit used', 'success')
+        else
+            QBCore.Functions.Notify('Nothing eligible (targets must be under 30%)', 'error')
+        end
+    end, 'repair_kit')
+end)
+
+-- Clean up clipboard when menu closes
 RegisterNetEvent('qb-menu:client:closeMenu', function()
     if currentClipboard and DoesEntityExist(currentClipboard) then
         print('[TOOLS DEBUG] Cleaning up clipboard')
@@ -352,3 +463,13 @@ RegisterNetEvent('qb-menu:client:closeMenu', function()
         currentClipboard = nil
     end
 end)
+
+local function SafeStateSet(veh, key, value)
+    if not veh or veh == 0 or not DoesEntityExist(veh) then return end
+    local st = Entity(veh).state
+    if st and st.set then
+        st:set(key, value, true)
+    else
+        TriggerServerEvent('pf_mech:server:setState', NetworkGetNetworkIdFromEntity(veh), key, value)
+    end
+end

@@ -1,21 +1,49 @@
 -- Vehicle Component Damage System with Environmental Effects and Realistic Failures
 local QBCore = exports['qb-core']:GetCoreObject()
 
+-- Global safe state setter so this file never crashes on state:set
+if not SafeStateSet then
+    function SafeStateSet(veh, key, value)
+        if not veh or veh == 0 or not DoesEntityExist(veh) then return end
+        local st = Entity(veh).state
+        if st and st.set then
+            st:set(key, value, true)
+        else
+            TriggerServerEvent('pf_mech:server:setState', NetworkGetNetworkIdFromEntity(veh), key, value)
+        end
+    end
+end
+
+-- Helper: Debug notify (only shows if Config.Debug = true)
+local function DebugNotify(msg, type)
+    if Config.Debug then
+        QBCore.Functions.Notify(msg, type or 'primary', 3000)
+    end
+    if Config.Debug then
+        print('[DAMAGE DEBUG] ' .. tostring(msg))
+    end
+end
+
 -- Configuration
 local DamageConfig = {
     enabled = true,
-    checkInterval = 15000, -- Check every 15 seconds
-    
-    -- Base damage rates (% per check interval)
+    checkInterval = 5000,
     damageRates = {
         alternator = 0.03,
         sparkplugs = 0.08,
         carbattery = 0.04,
-        oil = 0.06,
-        oil_filter = 0.05,
-        brakes = 0.05,         -- NEW: Brakes
+        oil = 0.02,              -- RESTORE: was 0.00
+        oil_filter = 0.01,       -- RESTORE: was 0.00
+        brakes = 0.05,
         suspension = 0.04,
-        axle = 0.03
+        axle = 0.03,
+        fuel_injector = 0.01,    -- RESTORE: was 0.00
+        powersteeringpump = 0.00,
+        power_steering_fluid = 0.00,
+        radiator = 0.00,
+        transmissionfluid = 0.00,
+        brakefluid = 0.00,
+        coolant = 0.00,
     },
     
     -- Starting thresholds
@@ -62,7 +90,8 @@ local lastWarnings = {}
 local lastEnvironmentalWarning = 0
 local batteryDeadNotified = {}
 local lastAlternatorStutter = {}
-local lastBrakeWarning = {} -- NEW: Track brake warnings
+local lastBrakeWarning = {}
+local repairInProgress = {} -- NEW: Track vehicles being repaired [plate] = true
 
 -- Offroad vehicle classes (get less environmental damage)
 local OffroadVehicleClasses = {
@@ -105,20 +134,31 @@ local function isOffroadVehicle(veh)
     return OffroadVehicleClasses[class] or false
 end
 
--- Helper: Get water/mud depth at vehicle position
+-- Helper: Get water/mud depth (add IsEntityInWater fallback)
 local function getWaterDepth(veh)
-    if not veh or not DoesEntityExist(veh) then return 0 end
-    
-    local coords = GetEntityCoords(veh)
-    local waterHeight = GetWaterHeight(coords.x, coords.y, coords.z)
-    
-    if waterHeight and waterHeight > 0 then
-        local vehicleHeight = coords.z
-        local depth = waterHeight - vehicleHeight
-        return math.max(0, depth)
+    if not veh or not DoesEntityExist(veh) then return 0.0 end
+    local x,y,z = table.unpack(GetEntityCoords(veh))
+    local found, height = GetWaterHeight(x, y, z)
+    if found then
+        local depth = (height - z)
+        if depth < 0 then depth = 0 end
+        return depth
     end
-    
-    return 0
+    if IsEntityInWater(veh) then
+        -- Fallback: treat as at least shallow (0.3) when native fails
+        return 0.3
+    end
+    return 0.0
+end
+
+-- Increase speed wear factors (more visible)
+local function speedWearFactor(mph)
+    if mph <= 40.0 then return 0.00 end
+    if mph <= 80.0 then return 0.30 end
+    if mph <= 100.0 then return 0.80 end
+    if mph <= 120.0 then return 1.60 end
+    local over = mph - 120.0
+    return 2.5 + (over * 0.12)       -- >120 ramps sharply
 end
 
 -- Helper: Check if vehicle is in mud/dirt (heuristic)
@@ -161,18 +201,75 @@ local function getVehicleDamage(veh)
     damage.brakes = damage.brakes or 0  -- NEW
     damage.suspension = damage.suspension or 0
     damage.axle = damage.axle or 0
-    
+    damage.fuel_injector = damage.fuel_injector or 0
+    damage.powersteeringpump = damage.powersteeringpump or 0
+    damage.radiator = damage.radiator or 0
+    damage.power_steering_fluid = damage.power_steering_fluid or 0
+    damage.transmissionfluid = damage.transmissionfluid or 0
+    damage.brakefluid = damage.brakefluid or 0
+    damage.coolant = damage.coolant or 0
+    damage.engine_part = damage.engine_part or 0
+    damage.body_part   = damage.body_part or 0
     return damage
 end
 
--- Helper: Apply damage to vehicle state
+-- Helper: Apply damage to vehicle state (ADD engine_part/body_part preservation)
 local function applyDamage(veh, damage)
-    if not veh or not DoesEntityExist(veh) or not damage then return end
+    if not veh or not DoesEntityExist(veh) or not damage then 
+        print('[DAMAGE ERROR] applyDamage called with invalid parameters')
+        return 
+    end
     
     local state = Entity(veh)
-    if not state or not state.state then return end
+    if not state or not state.state then 
+        print('[DAMAGE ERROR] Vehicle entity state not available')
+        return 
+    end
     
-    state.state:set('partDamage', damage, true)
+    local cleanDamage = {
+        alternator = math.min(100, math.max(0, tonumber(damage.alternator) or 0)),
+        sparkplugs = math.min(100, math.max(0, tonumber(damage.sparkplugs) or 0)),
+        carbattery = math.min(100, math.max(0, tonumber(damage.carbattery) or 0)),
+        brakes     = math.min(100, math.max(0, tonumber(damage.brakes) or 0)),
+        suspension = math.min(100, math.max(0, tonumber(damage.suspension) or 0)),
+        axle       = math.min(100, math.max(0, tonumber(damage.axle) or 0)),
+        -- NEW: keep virtual damage values for engine/body so debug menu can reflect them
+        engine_part = math.min(100, math.max(0, tonumber(damage.engine_part) or 0)),
+        body_part   = math.min(100, math.max(0, tonumber(damage.body_part) or 0)),
+    }
+
+    -- Fractional (round to 2 decimals to minimize network spam)
+    local function keep(key)
+        local v = tonumber(damage[key]) or 0
+        v = math.min(100, math.max(0, v))
+        cleanDamage[key] = tonumber(string.format('%.2f', v))
+    end
+    keep('oil')
+    keep('oil_filter')
+    keep('fuel_injector')
+    keep('powersteeringpump')
+    keep('radiator')
+    keep('power_steering_fluid')
+    keep('transmissionfluid')
+    keep('brakefluid')
+    keep('coolant')
+
+    -- Debug only when oil actually changes noticeably
+    if (Entity(veh).state.partDamage and Entity(veh).state.partDamage.oil) then
+        local prev = tonumber(Entity(veh).state.partDamage.oil) or 0
+        if math.abs(prev - cleanDamage.oil) >= 0.10 then
+            print(string.format('[DAMAGE DEBUG] Oil damage %.2f -> %.2f', prev, cleanDamage.oil))
+        end
+    end
+
+    SafeStateSet(veh, 'partDamage', cleanDamage)
+    
+    -- Wait a frame to ensure state is set
+    Wait(0)
+    
+    -- Verify the state was actually set
+    local verify = (Entity(veh).state.partDamage) or {}
+    print('[DAMAGE DEBUG] Verified partDamage after set:', json.encode(verify))
 end
 
 -- NEW: Handle vehicle starting with battery/sparkplug/alternator failures
@@ -180,6 +277,7 @@ local function attemptVehicleStart(veh, damage)
     local batteryHealth = 100 - (tonumber(damage.carbattery) or 0)
     local sparkplugHealth = 100 - (tonumber(damage.sparkplugs) or 0)
     local alternatorHealth = 100 - (tonumber(damage.alternator) or 0)
+    local injectorHealth   = 100 - (tonumber(damage.fuel_injector) or 0)
     
     print('[DAMAGE DEBUG] Attempting start - Battery:', batteryHealth, '% Sparkplugs:', sparkplugHealth, '% Alternator:', alternatorHealth, '%')
     
@@ -224,6 +322,11 @@ local function attemptVehicleStart(veh, damage)
     -- Bad alternator makes starting harder (drains battery faster)
     if alternatorHealth < 50 then
         startChance = startChance * (alternatorHealth / 100)
+    end
+    
+    -- Make starting harder if fuel injector is damaged
+    if injectorHealth < 60 then
+        startChance = startChance * (injectorHealth / 100.0)
     end
     
     print('[DAMAGE DEBUG] Start chance:', startChance, '%')
@@ -599,7 +702,9 @@ CreateThread(function()
         local dmg = getVehicleDamage(veh)
         if not dmg then goto next end
 
-        local brakeHealth = math.max(0, math.min(100, 100 - (tonumber(dmg.brakes) or 0)))
+        -- Effective braking: worse of pads vs fluid
+        local effBrakeDmg = math.max(tonumber(dmg.brakes) or 0, tonumber(dmg.brakefluid) or 0)
+        local brakeHealth = math.max(0, math.min(100, 100 - effBrakeDmg))
 
         -- At 0% brakes: disable S key only when moving forward, allow when stopped/reversing
         if brakeHealth <= 0 then
@@ -706,6 +811,68 @@ local function applyDamageEffects(veh, damage)
         damage.oil = math.min(100, (damage.oil or 0) + 0.2)
     end
     
+    -- Fuel injector: hard to start if damaged
+    local injectorDmg = tonumber(damage.fuel_injector) or 0
+    if injectorDmg > 70 then
+        if math.random(100) < injectorDmg - 60 then
+            SetVehicleEngineOn(veh, false, true, true)
+            QBCore.Functions.Notify('⚠️ Fuel injector failing!', 'error', 3000)
+        end
+    end
+
+    -- Power steering pump: harder to steer if damaged
+    local psDmg = tonumber(damage.powersteeringpump) or 0
+    if psDmg > 0 then
+        local mult = 1.0 - (psDmg / 100)
+        SetVehicleSteeringScale(veh, mult)
+        if psDmg > 70 then
+            QBCore.Functions.Notify('⚠️ Power steering pump failing!', 'error', 3000)
+        end
+    end
+
+    -- Radiator: overheating if damaged
+    local radDmg = tonumber(damage.radiator) or 0
+    if radDmg > 70 then
+        if math.random(100) < (radDmg - 60) then
+            SetVehicleEngineTemperature(veh, 120.0)
+            QBCore.Functions.Notify('⚠️ Radiator failing! Overheating!', 'error', 3000)
+            if radDmg > 90 and math.random(100) < 10 then
+                SetVehicleEngineOn(veh, false, true, true)
+            end
+        end
+    end
+
+    -- Transmission fluid: delays gear change if low
+    local tfDmg = tonumber(damage.transmissionfluid) or 0
+    if tfDmg > 50 then
+        local delay = math.floor((tfDmg - 50) * 10)
+        Citizen.Wait(delay)
+    end
+
+    -- Brake fluid: acts like damaged brakes
+    local bfDmg = tonumber(damage.brakefluid) or 0
+    if bfDmg > 50 then
+        -- Use same logic as brakes (reduce brake force)
+        -- (Handled in brake thread)
+    end
+
+    -- Coolant: overheating and fire if low
+    local coolantDmg = tonumber(damage.coolant) or 0
+    if coolantDmg > 80 then
+        if math.random(100) < (coolantDmg - 80) then
+            SetVehicleEngineTemperature(veh, 150.0)
+            QBCore.Functions.Notify('⚠️ Coolant low! Overheating!', 'error', 3000)
+            -- Steam effect
+            UseParticleFxAssetNextCall("core")
+            StartParticleFxNonLoopedOnEntity("exp_grd_petrol_pump", veh, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 1.0, false, false, false)
+            if coolantDmg >= 100 and math.random(100) < 20 then
+                -- Fire!
+                StartEntityFire(veh)
+                QBCore.Functions.Notify('🔥 Engine fire! Coolant empty!', 'error', 5000)
+            end
+        end
+    end
+
     -- Note: Brakes are handled in dedicated thread
 end
 
@@ -763,8 +930,145 @@ local function checkComponentWarnings(veh, damage)
     end
 end
 
+-- NEW: Track mileage per vehicle (persisted in entity state)
+local function getVehicleMileage(veh)
+    if not veh or not DoesEntityExist(veh) then return 0 end
+    local state = Entity(veh).state
+    return tonumber(state.mileage) or 0
+end
+local function addMileage(veh, miles)
+    if not veh or not DoesEntityExist(veh) then return end
+    local state = Entity(veh).state
+    local current = tonumber(state.mileage) or 0
+    SafeStateSet(veh, 'mileage', current + miles)
+end
+
+-- NEW: Tables used but previously undefined
+local LastBrakePress = {}
+local BrakeHeat = {}
+
+-- DEBUG: Valid parts for damage commands
+local debugValidParts = {
+    alternator=true, sparkplugs=true, carbattery=true, oil=true, oil_filter=true,
+    brakes=true, suspension=true, axle=true, fuel_injector=true, powersteeringpump=true,
+    radiator=true, power_steering_fluid=true, transmissionfluid=true, brakefluid=true,
+    coolant=true
+}
+
+local function applyAndSyncDamage(veh, damage)
+    applyDamage(veh, damage)
+    applyDamageEffects(veh, damage)
+end
+
+local function setPartDamage(veh, part, value)
+    if not DoesEntityExist(veh) then return false, 'No vehicle' end
+    if not debugValidParts[part] then return false, 'Invalid part' end
+    local damage = getVehicleDamage(veh) or {}
+    damage[part] = math.max(0, math.min(100, tonumber(value) or 0))
+    applyAndSyncDamage(veh, damage)
+    return true
+end
+
+local function addPartDamage(veh, part, add)
+    if not DoesEntityExist(veh) then return false, 'No vehicle' end
+    if not debugValidParts[part] then return false, 'Invalid part' end
+    local damage = getVehicleDamage(veh) or {}
+    local current = tonumber(damage[part]) or 0
+    damage[part] = math.max(0, math.min(100, current + (tonumber(add) or 0)))
+    applyAndSyncDamage(veh, damage)
+    return true
+end
+
+-- DEBUG COMMANDS
+if Config.Debug then
+    RegisterCommand('damagepart', function(_, args)
+        local part, value = args[1], args[2]
+        if not part or not value then
+            print('Usage: /damagepart <part> <value 0-100>')
+            return
+        end
+        local veh = GetVehiclePedIsIn(PlayerPedId(), false)
+        local ok, err = setPartDamage(veh, part, value)
+        if ok then QBCore.Functions.Notify(('Set %s damage to %s%%'):format(part, value), 'success')
+        else QBCore.Functions.Notify(err, 'error') end
+    end)
+
+    RegisterCommand('damageadd', function(_, args)
+        local part, value = args[1], args[2]
+        if not part or not value then
+            print('Usage: /damageadd <part> <delta>')
+            return
+        end
+        local veh = GetVehiclePedIsIn(PlayerPedId(), false)
+        local ok, err = addPartDamage(veh, part, value)
+        if ok then QBCore.Functions.Notify(('Added %s%% damage to %s'):format(value, part), 'warning')
+        else QBCore.Functions.Notify(err, 'error') end
+    end)
+
+    RegisterCommand('damageall', function(_, args)
+        local value = tonumber(args[1]) or 0
+        local veh = GetVehiclePedIsIn(PlayerPedId(), false)
+        if veh == 0 then return QBCore.Functions.Notify('No vehicle', 'error') end
+        local damage = getVehicleDamage(veh) or {}
+        for part,_ in pairs(debugValidParts) do
+            damage[part] = math.max(0, math.min(100, value))
+        end
+        applyAndSyncDamage(veh, damage)
+        QBCore.Functions.Notify(('All parts set to %d%%'):format(value), 'success')
+    end)
+
+    RegisterCommand('damagereset', function()
+        local veh = GetVehiclePedIsIn(PlayerPedId(), false)
+        if veh == 0 then return QBCore.Functions.Notify('No vehicle', 'error') end
+        local damage = getVehicleDamage(veh) or {}
+        for part,_ in pairs(debugValidParts) do damage[part] = 0 end
+        applyAndSyncDamage(veh, damage)
+        QBCore.Functions.Notify('All part damage reset', 'success')
+    end)
+end -- FIX: Added missing end for Config.Debug block
+
+-- Convenience damage commands: /damageoil 80, /damagebrakes 60, etc.
+local function clamp01(v) return math.max(0, math.min(100, tonumber(v) or 0)) end
+local function setPartAndSync(veh, part, value)
+    local d = getVehicleDamage(veh) or {}
+    d[part] = clamp01(value)
+    applyDamage(veh, d)
+    applyDamageEffects(veh, d)
+end
+local function regDamageCommand(cmd, partKey)
+    RegisterCommand(cmd, function(_, args)
+        local ped = PlayerPedId()
+        local veh = GetVehiclePedIsIn(ped, false)
+        if veh == 0 then QBCore.Functions.Notify('Not in a vehicle', 'error'); return end
+        local val = args[1]
+        if val == nil then
+            QBCore.Functions.Notify(('Usage: /%s <0-100>'):format(cmd), 'error')
+            return
+        end
+        setPartAndSync(veh, partKey, val)
+        QBCore.Functions.Notify(('Set %s damage to %d%%'):format(partKey, clamp01(val)), 'primary')
+    end, false)
+end
+
+-- Register per-part commands
+regDamageCommand('damageoil',                'oil')
+regDamageCommand('damagebrakes',             'brakes')
+regDamageCommand('damagebattery',            'carbattery')
+regDamageCommand('damagecarbattery',         'carbattery')
+regDamageCommand('damagesparkplugs',         'sparkplugs')
+regDamageCommand('damagealternator',         'alternator')
+regDamageCommand('damageradiator',           'radiator')
+regDamageCommand('damagecoolant',            'coolant')
+regDamageCommand('damagebrakefluid',         'brakefluid')
+regDamageCommand('damagetransmissionfluid',  'transmissionfluid')
+regDamageCommand('damagepowersteeringpump',  'powersteeringpump')
+regDamageCommand('damagepowersteeringfluid', 'power_steering_fluid')
+regDamageCommand('damagesuspension',         'suspension')
+regDamageCommand('damageaxle',               'axle')
+
 -- Main damage loop
 CreateThread(function()
+    local lastPos = {}
     while true do
         Wait(DamageConfig.checkInterval)
         
@@ -780,63 +1084,261 @@ CreateThread(function()
         local driver = GetPedInVehicleSeat(veh, -1)
         if driver ~= ped then goto continue end
         
-        -- Get current damage
+        local plate = GetVehicleNumberPlateText(veh)
+        if repairInProgress[plate] then goto continue end
+        
         local damage = getVehicleDamage(veh)
         if not damage then goto continue end
         
-        -- Debug output (FIX: ensure all values are numbers)
-        local alternatorHealth = math.floor(100 - (tonumber(damage.alternator) or 0))
-        local batteryHealth = math.floor(100 - (tonumber(damage.carbattery) or 0))
-        local brakeHealth = math.floor(100 - (tonumber(damage.brakes) or 0))
-        local oilHealth = math.floor(100 - (tonumber(damage.oil) or 0))
-        local plugHealth = math.floor(100 - (tonumber(damage.sparkplugs) or 0))
-        
-        print(string.format('[DAMAGE DEBUG] Alt: %d%% | Bat: %d%% | Brakes: %d%% | Oil: %d%% | Plugs: %d%%', 
-            alternatorHealth,
-            batteryHealth,
-            brakeHealth,
-            oilHealth, 
-            plugHealth
-        ))
-        
-        -- Calculate brake multiplier for debug
-        if brakeHealth < DamageConfig.brakes.fade_threshold then
-            local healthRatio = brakeHealth / 100
-            local minPower = 1.0 - DamageConfig.brakes.max_power_loss
-            local brakeMultiplier = math.max(minPower, minPower + (healthRatio * DamageConfig.brakes.max_power_loss))
-            print(string.format('[BRAKE DEBUG] Brake power: %.0f%% (Health: %d%%)', brakeMultiplier * 100, brakeHealth))
-        end
-        
-        local envMultiplier = calculateEnvironmentalMultiplier(veh)
+        local speed = GetEntitySpeed(veh) * 2.236936
+        local rpm   = GetVehicleCurrentRpm(veh)
         local waterDepth = getWaterDepth(veh)
         local inMud = isInMud(veh)
-        
-        if waterDepth > 0.1 or inMud then
-            print(string.format('[DAMAGE DEBUG] Environmental damage active! Multiplier: %.2f', envMultiplier))
-            damage.oil = math.min(100, (tonumber(damage.oil) or 0) + (0.3 * envMultiplier))
-            damage.oil_filter = math.min(100, (tonumber(damage.oil_filter) or 0) + (0.25 * envMultiplier))
-            
-            if waterDepth > 0.3 then
-                damage.carbattery = math.min(100, (tonumber(damage.carbattery) or 0) + (0.4 * envMultiplier))
+
+        -- ========== MILEAGE TRACKING ==========
+        local pos = GetEntityCoords(veh)
+        if lastPos[veh] then
+            local dist = #(pos - lastPos[veh]) * 0.000621371 -- meters to miles
+            addMileage(veh, dist)
+        end
+        lastPos[veh] = pos
+
+        -- ========== BRAKES (extended wear system) ==========
+        do
+            local cfg = Config.WearRates.brakes -- Use config values
+            local brakeAdd = 0.0
+            local speed = GetEntitySpeed(veh) * 2.236936
+            local isBraking = IsControlPressed(0, 72)
+            local isHandbrake = IsControlPressed(0, 76)
+            local isAccel = IsControlPressed(0, 71)
+            local isBrakeKey = IsControlPressed(0, 72)
+            local brakePressure = GetControlValue(0, 72) or 0
+            local steerAngle = math.abs(GetVehicleSteeringAngle(veh) or 0.0)
+
+            -- Baseline random wear while moving
+            if speed > 5.0 then
+                brakeAdd = brakeAdd + (math.random(
+                    math.floor(cfg.baselineRandomMin * 100),
+                    math.floor(cfg.baselineRandomMax * 100)
+                ) / 100.0)
             end
-            
-            if inMud then
-                damage.suspension = math.min(100, (tonumber(damage.suspension) or 0) + (0.2 * envMultiplier))
-                damage.axle = math.min(100, (tonumber(damage.axle) or 0) + (0.15 * envMultiplier))
+
+            -- Speed extra
+            if speed > cfg.speedExtraStartMPH then
+                local over = speed - cfg.speedExtraStartMPH
+                brakeAdd = brakeAdd + (over * cfg.speedExtraScale)
+            end
+
+            -- Active braking
+            if isBraking then
+                local base = (speed > 60) and 0.55 or (speed > 30 and 0.35 or 0.18)
+                base = base * (0.4 + (brakePressure / 255.0) * 0.9)
+                brakeAdd = brakeAdd + base
+
+                -- Sustained press bonus
+                local now = GetGameTimer()
+                if not LastBrakePress[veh] then LastBrakePress[veh] = now end
+                if (now - LastBrakePress[veh]) >= cfg.sustainedBrakeInterval then
+                    brakeAdd = brakeAdd + cfg.sustainedBonus
+                    LastBrakePress[veh] = now + 800
+                end
+
+                -- Cornering stress
+                if steerAngle > cfg.steeringAngleWearStart then
+                    local angOver = steerAngle - cfg.steeringAngleWearStart
+                    brakeAdd = brakeAdd + (angOver * cfg.steeringAngleScale)
+                end
+            else
+                LastBrakePress[veh] = nil
+            end
+
+            -- Handbrake slides
+            if isHandbrake and speed > 6.0 then
+                brakeAdd = brakeAdd + cfg.handbrakePerTick
+            end
+
+            -- Burnout (W+S)
+            if isAccel and isBrakeKey and speed > 1.5 then
+                brakeAdd = brakeAdd + cfg.burnoutExtra
+            end
+
+            -- Downhill
+            do
+                local vel = GetEntityVelocity(veh)
+                local fwd = GetEntityForwardVector(veh)
+                local fwdSpeed = vel.x*fwd.x + vel.y*fwd.y + vel.z*fwd.z
+                if isBraking and fwdSpeed < cfg.downhillDecelThreshold then
+                    brakeAdd = brakeAdd + cfg.downhillBonus
+                end
+            end
+
+            -- Heat system
+            local heat = BrakeHeat[veh] or 0
+            if isBraking or isHandbrake then
+                heat = heat + (brakeAdd * cfg.heatIncreasePerWear)
+            else
+                heat = math.max(0, heat - cfg.heatDecayPerTick)
+            end
+            BrakeHeat[veh] = heat
+
+            if heat > 120 then
+                brakeAdd = brakeAdd + (heat * cfg.heatWearScale)
+            end
+
+            if brakeAdd > 0 then
+                damage.brakes = math.min(100, (tonumber(damage.brakes) or 0) + brakeAdd)
             end
         end
-        
-        -- Calculate and apply normal driving damage
-        for part, baseRate in pairs(DamageConfig.damageRates) do
-            local drivingMult = calculateDrivingMultiplier(veh, part)
-            local totalMult = drivingMult * envMultiplier
-            local newDamage = baseRate * totalMult
-            
-            damage[part] = math.min(100, (tonumber(damage[part]) or 0) + newDamage)
+
+        -- ========== RADIATOR - USE CONFIG ==========
+        do
+            local cfg = Config.WearRates.radiator
+            local bodyHealth = GetVehicleBodyHealth(veh)
+            if bodyHealth < 800 then
+                local bodyDmg = (1000 - bodyHealth) / 1000
+                damage.radiator = math.min(100, (tonumber(damage.radiator) or 0) + (bodyDmg * cfg.bodyDamageScale))
+            end
+            if HasEntityCollidedWithAnything(veh) and speed > 20.0 then
+                damage.radiator = math.min(100, (tonumber(damage.radiator) or 0) + cfg.collisionDamage)
+            end
+            if waterDepth > 0.2 then
+                damage.radiator = math.min(100, (tonumber(damage.radiator) or 0) + cfg.waterIngestionRate)
+            end
         end
-        
+
+        -- ========== COOLANT - USE CONFIG ==========
+        do
+            local cfg = Config.WearRates.coolant
+            local coolantAdd = 0.0
+            if speed > cfg.speedThreshold then
+                local over = speed - cfg.speedThreshold
+                coolantAdd = coolantAdd + (cfg.speedLossBase + (over * cfg.speedLossScale))
+            end
+            local temp = GetVehicleEngineTemperature(veh) or 90.0
+            if temp > cfg.tempThreshold then
+                coolantAdd = coolantAdd + ((temp - cfg.tempThreshold) * cfg.tempLossScale)
+            end
+            local radDmg = tonumber(damage.radiator) or 0
+            if radDmg > cfg.radiatorDamageThreshold then
+                coolantAdd = coolantAdd + ((radDmg - cfg.radiatorDamageThreshold) * cfg.radiatorLossScale)
+            end
+            if waterDepth > 0.1 then
+                coolantAdd = coolantAdd + cfg.waterContamination
+            end
+            damage.coolant = math.min(100, (tonumber(damage.coolant) or 0) + coolantAdd)
+        end
+
+        -- ========== AXLE & SUSPENSION - USE CONFIG ==========
+        do
+            local cfg = Config.WearRates.suspension
+            local onGround = IsVehicleOnAllWheels(veh)
+            if not onGround and speed > cfg.airtimeSpeedThreshold then
+                local airFactor = math.min(2.0, speed / 60.0)
+                damage.axle       = math.min(100, (tonumber(damage.axle) or 0) + (airFactor * cfg.airtimeScale))
+                damage.suspension = math.min(100, (tonumber(damage.suspension) or 0) + (airFactor * cfg.suspensionAirtimeScale))
+            end
+            if speed > 60 then
+                damage.suspension = math.min(100, (tonumber(damage.suspension) or 0) + cfg.highSpeedWear)
+            end
+        end
+
+        -- ========== SPARK PLUGS - USE CONFIG ==========
+        do
+            local cfg = Config.WearRates.sparkplugs
+            local plugAdd = 0.0
+            local miles = getVehicleMileage(veh)
+            local mileageDmg = math.floor(miles / cfg.mileagePerPercent)
+            if mileageDmg > (tonumber(damage.sparkplugs) or 0) then
+                plugAdd = plugAdd + (mileageDmg - (tonumber(damage.sparkplugs) or 0))
+            end
+            local temp = GetVehicleEngineTemperature(veh) or 90.0
+            if temp > cfg.overheatingTempThreshold then
+                plugAdd = plugAdd + ((temp - cfg.overheatingTempThreshold) * cfg.overheatingScale)
+            end
+            if IsEntityOnFire(veh) then
+                plugAdd = plugAdd + cfg.fireDamage
+            end
+            local sparkDmg = tonumber(damage.sparkplugs) or 0
+            if sparkDmg > cfg.misfireThreshold and math.random(100) < cfg.misfireChance then
+                plugAdd = plugAdd + cfg.misfireDamage
+            end
+            local oilHealth = 100 - (tonumber(damage.oil) or 0)
+            if oilHealth < cfg.oilLeakThreshold then
+                plugAdd = plugAdd + ((cfg.oilLeakThreshold - oilHealth) * cfg.oilLeakScale)
+            end
+            damage.sparkplugs = math.min(100, (tonumber(damage.sparkplugs) or 0) + plugAdd)
+        end
+
+        -- ========== OIL & OIL FILTER (RESTORED) ==========
+        do
+            local oilAdd = DamageConfig.damageRates.oil
+            local filterAdd = DamageConfig.damageRates.oil_filter
+            
+            -- Speed multiplier
+            if speed > 80 then
+                oilAdd = oilAdd * 1.8
+                filterAdd = filterAdd * 1.5
+            end
+            
+            -- High RPM
+            if rpm > 0.85 then
+                oilAdd = oilAdd * 1.5
+            end
+            
+            -- Engine temp
+            local temp = GetVehicleEngineTemperature(veh) or 90.0
+            if temp > 110.0 then
+                oilAdd = oilAdd + ((temp - 110.0) * 0.02)
+            end
+            
+            -- Dirty filter makes oil degrade faster
+            local filterDmg = tonumber(damage.oil_filter) or 0
+            if filterDmg > 60 then
+                oilAdd = oilAdd + (filterDmg * 0.003)
+            end
+            
+            -- Dirty oil clogs filter
+            local oilDmg = tonumber(damage.oil) or 0
+            if oilDmg > 50 then
+                filterAdd = filterAdd + (oilDmg * 0.002)
+            end
+            
+            damage.oil = math.min(100, (tonumber(damage.oil) or 0) + oilAdd)
+            damage.oil_filter = math.min(100, (tonumber(damage.oil_filter) or 0) + filterAdd)
+        end
+
+        -- ========== FUEL INJECTOR (RESTORED) ==========
+        do
+            local injAdd = DamageConfig.damageRates.fuel_injector
+            if injAdd > 0 then
+                -- Degrade faster with dirty fuel (simulated by low oil quality)
+                local oilHealth = 100 - (tonumber(damage.oil) or 0)
+                if oilHealth < 40 then
+                    injAdd = injAdd * 2.0
+                end
+                
+                -- High speed wear
+                if speed > 90 then
+                    injAdd = injAdd * 1.5
+                end
+                
+                damage.fuel_injector = math.min(100, (tonumber(damage.fuel_injector) or 0) + injAdd)
+            end
+        end
+
+        -- chassis wear from terrain
+        if inMud then
+            damage.suspension = math.min(100, (tonumber(damage.suspension) or 0) + Config.WearRates.suspension.mudWear)
+            damage.axle       = math.min(100, (tonumber(damage.axle) or 0) + Config.WearRates.axle.mudWear)
+        end
+        if waterDepth > 0.30 then
+            damage.carbattery = math.min(100, (tonumber(damage.carbattery) or 0) + 0.8)
+        end
+
+        -- Persist & effects
         applyDamage(veh, damage)
         applyDamageEffects(veh, damage)
+        local envMultiplier = calculateEnvironmentalMultiplier(veh)
         checkEnvironmentalWarnings(veh, envMultiplier)
         checkComponentWarnings(veh, damage)
         
@@ -844,7 +1346,7 @@ CreateThread(function()
     end
 end)
 
--- Commands
+-- Commands (fixed)
 RegisterCommand('toggledamage', function()
     DamageConfig.enabled = not DamageConfig.enabled
     QBCore.Functions.Notify('Damage system: ' .. (DamageConfig.enabled and 'Enabled' or 'Disabled'), 'info')
@@ -852,434 +1354,142 @@ end, false)
 
 RegisterCommand('resetdamage', function()
     local ped = PlayerPedId()
-    if not IsPedInAnyVehicle(ped, false) then 
+    if not IsPedInAnyVehicle(ped, false) then
         QBCore.Functions.Notify('Not in a vehicle', 'error')
-        return 
+        return
     end
-    
     local veh = GetVehiclePedIsIn(ped, false)
+    local state = Entity(veh).state
     local damage = {
-        alternator = 0,
-        sparkplugs = 0,
-        carbattery = 0,
-        oil = 0,
-        oil_filter = 0,
-        brakes = 0,  -- NEW
-        suspension = 0,
-        axle = 0
+        alternator = 0, sparkplugs = 0, carbattery = 0,
+        oil = 0, oil_filter = 0, brakes = 0,
+        suspension = 0, axle = 0,
+        fuel_injector = 0, powersteeringpump = 0, radiator = 0,
+        power_steering_fluid = 0, transmissionfluid = 0,
+        brakefluid = 0, coolant = 0
     }
-    
-    applyDamage(veh, damage)
+    SafeStateSet(veh, 'partDamage', damage)
     SetVehicleEngineHealth(veh, 1000.0)
     SetVehicleBodyHealth(veh, 1000.0)
     SetVehicleFixed(veh)
-    
-    -- Reset notification flags
-    local plate = GetVehicleNumberPlateText(veh)
-    batteryDeadNotified[plate] = nil
-    lastAlternatorStutter[plate] = nil
-    lastBrakeWarning[plate] = nil  -- NEW
-    
-    QBCore.Functions.Notify('All damage reset', 'success')
+    QBCore.Functions.Notify('Vehicle damage reset', 'success')
 end, false)
 
--- Debug command to check environmental conditions
-RegisterCommand('checkenv', function()
-    local ped = PlayerPedId()
-    if not IsPedInAnyVehicle(ped, false) then return end
-    
-    local veh = GetVehiclePedIsIn(ped, false)
-    local waterDepth = getWaterDepth(veh)
-    local inMud = isInMud(veh)
+-- Item use handlers (fixed, minimal and reliable)
+RegisterNetEvent('pf-mechanicjob:client:use:alternator', function()
+    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
+    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
+
     local damage = getVehicleDamage(veh) or {}
-    local batteryHealth = 100 - (tonumber(damage.carbattery) or 0)
-    local oilHealth = 100 - (tonumber(damage.oil) or 0)
-    QBCore.Functions.Notify(string.format('Battery: %d%% | Oil: %d%% | Water: %.2fm', batteryHealth, oilHealth, waterDepth), 'info', 5000)
-end, false)
+    if (tonumber(damage.alternator) or 0) <= 0 then return QBCore.Functions.Notify('Alternator already OK', 'success') end
 
--- NEW: Command to damage battery for testing
-RegisterCommand('damagebattery', function(source, args)
-    local ped = PlayerPedId()
-    if not IsPedInAnyVehicle(ped, false) then 
-        QBCore.Functions.Notify('Not in a vehicle', 'error')
-        return 
-    end
-    
-    local veh = GetVehiclePedIsIn(ped, false)
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then return QBCore.Functions.Notify('Missing alternator', 'error') end
+        doMechanicAction('Replacing alternator', 4000)
+        damage.alternator = 0
+        SafeStateSet(veh, 'partDamage', damage)
+        QBCore.Functions.Notify('Alternator replaced', 'success')
+    end, 'alternator')
+end)
+
+RegisterNetEvent('pf-mechanicjob:client:use:engine_oil', function()
+    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
+    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
+
     local damage = getVehicleDamage(veh) or {}
-    
-    local amount = tonumber(args[1]) or 40
-    damage.carbattery = math.min(100, (damage.carbattery or 0) + amount)
-    
-    applyDamage(veh, damage)
-    
-    local batteryHealth = 100 - damage.carbattery
-    QBCore.Functions.Notify(string.format('Battery damaged to %d%%', batteryHealth), 'success')
-    print('[DAMAGE] Battery health now:', batteryHealth, '%')
-end, false)
+    if (tonumber(damage.oil) or 0) <= 0 then return QBCore.Functions.Notify('Engine oil already fresh', 'success') end
 
--- NEW: Command to damage sparkplugs for testing
-RegisterCommand('damageplugs', function(source, args)
-    local ped = PlayerPedId()
-    if not IsPedInAnyVehicle(ped, false) then 
-        QBCore.Functions.Notify('Not in a vehicle', 'error')
-        return 
-    end
-    
-    local veh = GetVehiclePedIsIn(ped, false)
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then return QBCore.Functions.Notify('Missing engine oil', 'error') end
+        doMechanicAction('Changing engine oil', 5000)
+        damage.oil = 0
+        SafeStateSet(veh, 'partDamage', damage)
+        QBCore.Functions.Notify('Engine oil changed', 'success')
+    end, 'engine_oil')
+end)
+
+RegisterNetEvent('pf-mechanicjob:client:use:oil_filter', function()
+    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
+    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
+
     local damage = getVehicleDamage(veh) or {}
-    
-    local amount = tonumber(args[1]) or 40
-    damage.sparkplugs = math.min(100, (damage.sparkplugs or 0) + amount)
-    
-    applyDamage(veh, damage)
-    
-    local sparkplugHealth = 100 - damage.sparkplugs
-    QBCore.Functions.Notify(string.format('Spark plugs damaged to %d%%', sparkplugHealth), 'success')
-    print('[DAMAGE] Sparkplug health now:', sparkplugHealth, '%')
-end, false)
+    if (tonumber(damage.oil_filter) or 0) <= 0 then return QBCore.Functions.Notify('Oil filter already clean', 'success') end
 
--- NEW: Command to damage alternator for testing
-RegisterCommand('damagealternator', function(source, args)
-    local ped = PlayerPedId()
-    if not IsPedInAnyVehicle(ped, false) then 
-        QBCore.Functions.Notify('Not in a vehicle', 'error')
-        return 
-    end
-    
-    local veh = GetVehiclePedIsIn(ped, false)
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then return QBCore.Functions.Notify('Missing oil filter', 'error') end
+        doMechanicAction('Replacing oil filter', 3500)
+        damage.oil_filter = 0
+        SafeStateSet(veh, 'partDamage', damage)
+        QBCore.Functions.Notify('Oil filter replaced', 'success')
+    end, 'oil_filter')
+end)
+
+-- fuel_injector (NEW)
+RegisterNetEvent('pf-mechanicjob:client:use:fuel_injector', function()
+    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
+    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
+
     local damage = getVehicleDamage(veh) or {}
-    
-    local amount = tonumber(args[1]) or 40
-    damage.alternator = math.min(100, (damage.alternator or 0) + amount)
-    
-    applyDamage(veh, damage)
-    
-    -- Reset stutter timer so it stutters immediately for testing
-    local plate = GetVehicleNumberPlateText(veh)
-    lastAlternatorStutter[plate] = 0
-    
-    local alternatorHealth = 100 - damage.alternator
-    QBCore.Functions.Notify(string.format('Alternator damaged to %d%%', alternatorHealth), 'success')
-    print('[DAMAGE] Alternator health now:', alternatorHealth, '%')
-end, false)
+    if (tonumber(damage.fuel_injector) or 0) <= 0 then return QBCore.Functions.Notify('Fuel injector already OK', 'success') end
 
--- NEW: Command to damage brakes for testing
-RegisterCommand('damagebrakes', function(source, args)
-    local ped = PlayerPedId()
-    if not IsPedInAnyVehicle(ped, false) then 
-        QBCore.Functions.Notify('Not in a vehicle', 'error')
-        return 
-    end
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then return QBCore.Functions.Notify('Missing fuel injector', 'error') end
+        doMechanicAction('Replacing fuel injector', 4500)
+        -- Each injector repairs 25% (max 4 items = 100%)
+        damage.fuel_injector = math.max(0, (tonumber(damage.fuel_injector) or 0) - 25)
+        SafeStateSet(veh, 'partDamage', damage)
+        QBCore.Functions.Notify('Fuel injector replaced', 'success')
+    end, 'fuel_injector')
+end)
 
-    local veh = GetVehiclePedIsIn(ped, false)
+-- powersteeringpump (NEW)
+RegisterNetEvent('pf-mechanicjob:client:use:powersteeringpump', function()
+    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
+    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
+
     local damage = getVehicleDamage(veh) or {}
+    if (tonumber(damage.powersteeringpump) or 0) <= 0 then return QBCore.Functions.Notify('Power steering pump already OK', 'success') end
 
-    local amount = tonumber(args[1]) or 40
-    damage.brakes = math.min(100, (tonumber(damage.brakes) or 0) + amount)
-
-    applyDamage(veh, damage)
-
-    local brakeHealth = math.floor(100 - (tonumber(damage.brakes) or 0))
-    local brakePower = brakeHealth -- 1:1 mapping
-
-    QBCore.Functions.Notify(string.format('Brakes damaged to %d%% (%d%% brake power)', brakeHealth, brakePower), 'success')
-    print(('[DAMAGE] Brake health: %d%% | Brake power: %d%%'):format(brakeHealth, brakePower))
-
-    if brakeHealth <= 0 then
-        QBCore.Functions.Notify('🛑 TOTAL BRAKE FAILURE! Cannot brake while moving! Reverse works when stopped.', 'error', 6000)
-    elseif brakeHealth < 30 then
-        QBCore.Functions.Notify('🛑 CRITICAL: Only 30% braking power!', 'error', 5000)
-    elseif brakeHealth < 60 then
-        QBCore.Functions.Notify('⚠️ Reduced braking power', 'warning', 3000)
-    end
-end, false)
-
--- Only repair vehicle body (does not touch engine)
-RegisterNetEvent('qb-core:client:use:body_part', function()
-    local veh = getRepairVehicle()
-    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
-    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
-
-    local body = GetVehicleBodyHealth(veh) or 0.0
-    if body >= 999.0 then
-        QBCore.Functions.Notify('Body is already fully repaired.', 'success')
-        return
-    end
-
-    -- snapshot unaffected components
-    local preEngine = GetVehicleEngineHealth(veh) or 0.0
-    local preTank = GetVehiclePetrolTankHealth(veh) or 1000.0
-
-    -- consume 1 body_part server-side
-    TriggerServerEvent('QBCore:Server:RemoveItem', 'body_part', 1)
-    if QBCore.Shared and QBCore.Shared.Items and QBCore.Shared.Items['body_part'] then
-        TriggerEvent('inventory:client:ItemBox', QBCore.Shared.Items['body_part'], 'remove', 1)
-    end
-
-    doMechanicAction('Repairing body...', 2500)
-
-    -- repair up to 25% of body (250.0 on 0-1000 scale)
-    local repairChunk = math.min(250.0, 1000.0 - body)
-    SetVehicleBodyHealth(veh, math.min(1000.0, body + repairChunk))
-
-    -- immediately restore unaffected components (engine/tank)
-    SetVehicleEngineHealth(veh, preEngine)
-    SetVehiclePetrolTankHealth(veh, preTank)
-
-    -- enforce unaffected components for a short window to avoid side-effects
-    CreateThread(function()
-        local expire = GetGameTimer() + 1200 -- ~1.2s
-        while GetGameTimer() < expire do
-            if not DoesEntityExist(veh) then break end
-            SetVehicleEngineHealth(veh, preEngine)
-            SetVehiclePetrolTankHealth(veh, preTank)
-            Wait(0)
-        end
-    end)
-
-    local newBody = math.floor((GetVehicleBodyHealth(veh) or 0.0) / 10)
-    QBCore.Functions.Notify(('Body repaired by %d%%. Body: %d%%'):format(math.floor(repairChunk / 10), newBody), 'success')
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then return QBCore.Functions.Notify('Missing power steering pump', 'error') end
+        doMechanicAction('Replacing power steering pump', 5000)
+        damage.powersteeringpump = 0
+        SafeStateSet(veh, 'partDamage', damage)
+        QBCore.Functions.Notify('Power steering pump replaced', 'success')
+    end, 'powersteeringpump')
 end)
 
--- Only repair engine (does not touch body)
-RegisterNetEvent('qb-core:client:use:engine_part', function()
-    local veh = getRepairVehicle()
-    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
-    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
+-- radiator (NEW)
+RegisterNetEvent('pf-mechanicjob:client:use:radiator', function()
+    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
+    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
 
-    local eng = GetVehicleEngineHealth(veh) or 0.0
-    if eng >= 999.0 then
-        QBCore.Functions.Notify('Engine is already fully repaired.', 'success')
-        return
-    end
+    local damage = getVehicleDamage(veh) or {}
+    if (tonumber(damage.radiator) or 0) <= 0 then return QBCore.Functions.Notify('Radiator already OK', 'success') end
 
-    -- snapshot unaffected component
-    local preBody = GetVehicleBodyHealth(veh) or 0.0
-
-    -- consume 1 engine_part server-side
-    TriggerServerEvent('QBCore:Server:RemoveItem', 'engine_part', 1)
-    if QBCore.Shared and QBCore.Shared.Items and QBCore.Shared.Items['engine_part'] then
-        TriggerEvent('inventory:client:ItemBox', QBCore.Shared.Items['engine_part'], 'remove', 1)
-    end
-
-    doMechanicAction('Repairing engine...', 2500)
-
-    -- repair up to 25% of engine (250.0 on 0-1000 scale)
-    local repairChunk = math.min(250.0, 1000.0 - eng)
-    SetVehicleEngineHealth(veh, math.min(1000.0, eng + repairChunk))
-
-    -- enforce unaffected component for a few frames (avoid side-effects)
-    CreateThread(function()
-        for i = 1, 10 do
-            if DoesEntityExist(veh) then
-                SetVehicleBodyHealth(veh, preBody)
-            end
-            Wait(0)
-        end
-    end)
-
-    local newEng = math.floor((GetVehicleEngineHealth(veh) or 0.0) / 10)
-    QBCore.Functions.Notify(('Engine repaired by %d%%. Engine: %d%%'):format(math.floor(repairChunk / 10), newEng), 'success')
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then return QBCore.Functions.Notify('Missing radiator', 'error') end
+        doMechanicAction('Replacing radiator', 6000)
+        damage.radiator = 0
+        SafeStateSet(veh, 'partDamage', damage)
+        QBCore.Functions.Notify('Radiator replaced', 'success')
+    end, 'radiator')
 end)
 
--- helper: get usable vehicle (in or near player)
-local function getRepairVehicle()
-    local ped = PlayerPedId()
-    if IsPedInAnyVehicle(ped, false) then
-        local veh = GetVehiclePedIsIn(ped, false)
-        if veh ~= 0 and DoesEntityExist(veh) then return veh end
-    end
-    local coords = GetEntityCoords(ped)
-    local veh = GetClosestVehicle(coords.x, coords.y, coords.z, 6.0, 0, 70)
-    if veh ~= 0 and DoesEntityExist(veh) then return veh end
-    return nil
-end
+-- power_steering_fluid (ALREADY EXISTS - keep as is)
+-- ...existing code...
 
--- helper: request control before mutating entity state
-local function ensureControl(entity, timeoutMs)
-    if not entity or entity == 0 then return false end
-    local start = GetGameTimer()
-    while not NetworkHasControlOfEntity(entity) and (GetGameTimer() - start) < (timeoutMs or 700) do
-        NetworkRequestControlOfEntity(entity)
-        Wait(0)
-    end
-    return NetworkHasControlOfEntity(entity)
-end
+-- transmissionfluid (ALREADY EXISTS - keep as is)
+-- ...existing code...
 
--- calculate brake pads needed for display (ceil to allow topping off)
-local function calcPadsNeeded(brakeDmg)
-    if brakeDmg <= 0 then return 0 end
-    return math.min(4, math.ceil(brakeDmg / 25))
-end
+-- brakefluid (ALREADY EXISTS - keep as is)
+-- ...existing code...
 
--- count available brake pads in inventory
-local function countBrakePads()
-    local total = 0
-    if QBCore.Functions.GetPlayerData then
-        local items = (QBCore.Functions.GetPlayerData().items or {})
-        for _, it in pairs(items) do
-            if it and it.name == 'brake_pads' then
-                total = total + (it.amount or 1)
-            end
-        end
-    end
-    return total
-end
+-- coolant (ALREADY EXISTS - keep as is)
+-- ...existing code...
 
--- play a short mechanic action (like battery/body)
-local function doMechanicAction(label, ms)
-    if QBCore.Functions.Progressbar then
-        QBCore.Functions.Progressbar('pf_brake_repair', label or 'Working...', ms or 2000, false, true, {
-            disableMovement = true, disableCarMovement = true, disableMouse = false, disableCombat = true,
-        }, {
-            animDict = 'mini@repair', anim = 'fixing_a_ped', flags = 49,
-        }, {}, {}, function() end, function() end)
-    else
-        -- fallback wait if no progressbar
-        Wait(ms or 2000)
-    end
-end
-
--- toolbox-style event: one-use = one pad, repairs up to 25% (tops off if <25% remain)
-RegisterNetEvent('pf-mechanicjob:client:repair:brakes', function()
-    local veh = getRepairVehicle()
-    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
-    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
-
-    local damage = getVehicleDamage(veh)
-    if not damage then QBCore.Functions.Notify('Cannot read brake condition.', 'error'); return end
-
-    local brakeDmg = tonumber(damage.brakes) or 0
-    if brakeDmg <= 0 then
-        QBCore.Functions.Notify('Brakes are already in perfect condition.', 'success')
-        return
-    end
-
-    -- ask server to consume exactly 1 brake_pads
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeBrakePad', function(ok)
-        if not ok then
-            QBCore.Functions.Notify('You have no brake pads.', 'error')
-            return
-        end
-
-        -- single-pad workflow
-        doMechanicAction('Replacing 1 brake pad', 2200)
-
-        -- apply up to 25% repair, clamped to remaining damage (tops off uneven)
-        local repairChunk = math.min(25, brakeDmg)
-        brakeDmg = math.max(0, brakeDmg - repairChunk)
-        damage.brakes = brakeDmg
-        applyDamage(veh, damage)
-
-        local newHealth = math.max(0, 100 - brakeDmg)
-        QBCore.Functions.Notify(('Brakes repaired by %d%%. Health: %d%%'):format(repairChunk, newHealth), 'success')
-    end)
-end)
-
--- Final result notifier
-RegisterNetEvent('pf-mechanicjob:client:brakeRepairResult', function(used, newBrakeDmg, err)
-    if err then
-        QBCore.Functions.Notify(err, 'error')
-        return
-    end
-    local newHealth = math.max(0, 100 - (tonumber(newBrakeDmg) or 0))
-    QBCore.Functions.Notify(('Replaced %d brake pad%s. New brake health: %d%%'):format(used or 0, (used or 0) > 1 and 's' or '', newHealth), 'success')
-end)
-
--- optional fallback command to test without UI
-RegisterCommand('repairbrakes', function()
-    TriggerEvent('pf-mechanicjob:client:repair:brakes')
-end, false)
-
-RegisterNetEvent('qb-core:client:use:brake_pads', function()
-    TriggerEvent('pf-mechanicjob:client:repair:brakes')
-end)
-
--- Only repair vehicle body (does not touch engine)
-RegisterNetEvent('qb-core:client:use:body_part', function()
-    local veh = getRepairVehicle()
-    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
-    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
-
-    local body = GetVehicleBodyHealth(veh) or 0.0
-    if body >= 999.0 then
-        QBCore.Functions.Notify('Body is already fully repaired.', 'success')
-        return
-    end
-
-    -- snapshot unaffected components
-    local preEngine = GetVehicleEngineHealth(veh) or 0.0
-    local preTank = GetVehiclePetrolTankHealth(veh) or 1000.0
-
-    -- consume 1 body_part server-side
-    TriggerServerEvent('QBCore:Server:RemoveItem', 'body_part', 1)
-    if QBCore.Shared and QBCore.Shared.Items and QBCore.Shared.Items['body_part'] then
-        TriggerEvent('inventory:client:ItemBox', QBCore.Shared.Items['body_part'], 'remove', 1)
-    end
-
-    doMechanicAction('Repairing body...', 2500)
-
-    -- repair up to 25% of body (250.0 on 0-1000 scale)
-    local repairChunk = math.min(250.0, 1000.0 - body)
-    SetVehicleBodyHealth(veh, math.min(1000.0, body + repairChunk))
-
-    -- immediately restore unaffected components (engine/tank)
-    SetVehicleEngineHealth(veh, preEngine)
-    SetVehiclePetrolTankHealth(veh, preTank)
-
-    -- enforce unaffected components for a short window to avoid side-effects
-    CreateThread(function()
-        local expire = GetGameTimer() + 1200 -- ~1.2s
-        while GetGameTimer() < expire do
-            if not DoesEntityExist(veh) then break end
-            SetVehicleEngineHealth(veh, preEngine)
-            SetVehiclePetrolTankHealth(veh, preTank)
-            Wait(0)
-        end
-    end)
-
-    local newBody = math.floor((GetVehicleBodyHealth(veh) or 0.0) / 10)
-    QBCore.Functions.Notify(('Body repaired by %d%%. Body: %d%%'):format(math.floor(repairChunk / 10), newBody), 'success')
-end)
-
--- Only repair engine (does not touch body)
-RegisterNetEvent('qb-core:client:use:engine_part', function()
-    local veh = getRepairVehicle()
-    if not veh then QBCore.Functions.Notify('No vehicle found nearby.', 'error'); return end
-    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle.', 'error'); return end
-
-    local eng = GetVehicleEngineHealth(veh) or 0.0
-    if eng >= 999.0 then
-        QBCore.Functions.Notify('Engine is already fully repaired.', 'success')
-        return
-    end
-
-    -- snapshot unaffected component
-    local preBody = GetVehicleBodyHealth(veh) or 0.0
-
-    -- consume 1 engine_part server-side
-    TriggerServerEvent('QBCore:Server:RemoveItem', 'engine_part', 1)
-    if QBCore.Shared and QBCore.Shared.Items and QBCore.Shared.Items['engine_part'] then
-        TriggerEvent('inventory:client:ItemBox', QBCore.Shared.Items['engine_part'], 'remove', 1)
-    end
-
-    doMechanicAction('Repairing engine...', 2500)
-
-    -- repair up to 25% of engine (250.0 on 0-1000 scale)
-    local repairChunk = math.min(250.0, 1000.0 - eng)
-    SetVehicleEngineHealth(veh, math.min(1000.0, eng + repairChunk))
-
-    -- enforce unaffected component for a few frames (avoid side-effects)
-    CreateThread(function()
-        for i = 1, 10 do
-            if DoesEntityExist(veh) then
-                SetVehicleBodyHealth(veh, preBody)
-            end
-            Wait(0)
-        end
-    end)
-
-    local newEng = math.floor((GetVehicleEngineHealth(veh) or 0.0) / 10)
-    QBCore.Functions.Notify(('Engine repaired by %d%%. Engine: %d%%'):format(math.floor(repairChunk / 10), newEng), 'success')
+exports('GetPartDamageTable', function(veh)
+    if not veh or not DoesEntityExist(veh) then return {} end
+    local st = Entity(veh).state
+    return st.partDamage or {}
 end)

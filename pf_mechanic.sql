@@ -1,3 +1,41 @@
+-- Ensure qb-garages compatibility (safe to run anytime)
+ALTER TABLE `player_vehicles`
+  ADD COLUMN IF NOT EXISTS `mods` LONGTEXT NULL,
+  ADD INDEX IF NOT EXISTS `idx_plate` (`plate`);
+
+-- NEW: Dedicated vehicle diagnostics table
+CREATE TABLE IF NOT EXISTS `vehicle_diagnostics` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `plate` VARCHAR(50) NOT NULL,
+  `citizenid` VARCHAR(50) DEFAULT NULL,
+  `alternator` DECIMAL(5,2) DEFAULT 0.00,
+  `sparkplugs` DECIMAL(5,2) DEFAULT 0.00,
+  `carbattery` DECIMAL(5,2) DEFAULT 0.00,
+  `oil` DECIMAL(5,2) DEFAULT 0.00,
+  `oil_filter` DECIMAL(5,2) DEFAULT 0.00,
+  `brakes` DECIMAL(5,2) DEFAULT 0.00,
+  `suspension` DECIMAL(5,2) DEFAULT 0.00,
+  `axle` DECIMAL(5,2) DEFAULT 0.00,
+  `fuel_injector` DECIMAL(5,2) DEFAULT 0.00,
+  `powersteeringpump` DECIMAL(5,2) DEFAULT 0.00,
+  `radiator` DECIMAL(5,2) DEFAULT 0.00,
+  `power_steering_fluid` DECIMAL(5,2) DEFAULT 0.00,
+  `transmissionfluid` DECIMAL(5,2) DEFAULT 0.00,
+  `brakefluid` DECIMAL(5,2) DEFAULT 0.00,
+  `coolant` DECIMAL(5,2) DEFAULT 0.00,
+  `engine_part` DECIMAL(5,2) DEFAULT 0.00,
+  `body_part` DECIMAL(5,2) DEFAULT 0.00,
+  `mileage` DECIMAL(10,2) DEFAULT 0.00,
+  `engineHealth` DECIMAL(7,2) DEFAULT 1000.00,
+  `bodyHealth` DECIMAL(7,2) DEFAULT 1000.00,
+  `tankHealth` DECIMAL(7,2) DEFAULT 1000.00,
+  `dirtLevel` DECIMAL(6,2) DEFAULT 0.00,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `plate_unique` (`plate`),
+  KEY `citizenid_idx` (`citizenid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS pf_parts_catalog (
   part_id VARCHAR(64) PRIMARY KEY,
   label VARCHAR(64) NOT NULL,
@@ -64,3 +102,18 @@ CREATE TABLE IF NOT EXISTS pf_job_history (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX (citizenid), INDEX (plate)
 );
+
+CREATE TABLE IF NOT EXISTS `pf_service_log` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `plate` VARCHAR(16) NOT NULL,
+  `citizenid` VARCHAR(64) NOT NULL,
+  `author` VARCHAR(128) NOT NULL,
+  `note` TEXT NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_plate` (`plate`),
+  KEY `idx_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Optional: If you want mileage persisted in DB (alternatively use entity statebag)
+ALTER TABLE `player_vehicles` ADD COLUMN `mileage` FLOAT DEFAULT 0.0;

@@ -28,13 +28,23 @@ local function getNameFromPlayersTable(citizenid)
     return name
 end
 
+-- REPLACE isBoss to respect any allowed mechanic job
 local function isBoss(Player)
     if not Player or not Player.PlayerData or not Player.PlayerData.job then return false end
-    local job = Player.PlayerData.job
-    if job.name ~= (Config.Job or 'mechanic') then return false end
-    if job.isboss then return true end
-    local grade = tostring(job.grade and job.grade.level or job.grade or 0)
+    local jobData = Player.PlayerData.job
+    local jobName = jobData.name
+    if not Config.IsMechanicJob(jobName) then return false end
+    if jobData.isboss then return true end
+    local grade = tostring(jobData.grade and jobData.grade.level or jobData.grade or 0)
     return BossGrades[grade] == true
+end
+
+-- ADD: dynamic business key lookup (used throughout)
+local function getPlayerBusiness(Player)
+    if not Player or not Player.PlayerData or not Player.PlayerData.job then return nil end
+    local jobName = Player.PlayerData.job.name
+    if not Config.IsMechanicJob(jobName) then return nil end
+    return Config.GetBusinessKey(jobName)
 end
 
 local function ensureBusiness()
@@ -60,11 +70,13 @@ local function ensureBusinessRow(business)
     end
 end
 
+-- REMOVE / COMMENT OUT old single-row seeding handler
+--[[  (deprecated single business seed)
 AddEventHandler('onResourceStart', function(res)
     if res ~= GetCurrentResourceName() then return end
     ensureBusinessRow('mechanic')
 end)
-
+]]
 
 -- Transform flat pf_pos_items to { [category] = { {id,label,price}, ... } }
 local function buildCatalog(rows)
@@ -83,19 +95,45 @@ end
 
 AddEventHandler('onResourceStart', function(res)
     if res ~= resource then return end
-    ensureBusiness()
-
-    -- Seed POS items if empty
-    local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic') }) or 0
-    if cnt == 0 and Config.CatalogSeed then
-        for _, it in ipairs(Config.CatalogSeed) do
-            MySQL.insert.await(
-                'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
-                { Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic'), it.id, it.category, it.label, it.price }
-            )
+    ensureAllBusinesses()                 -- now seeds all configured shops
+    -- Seed POS items per business if empty
+    for key, branding in pairs(Config.BusinessBranding or {}) do
+        local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { branding.business }) or 0
+        if cnt == 0 and Config.CatalogSeed then
+            for _, it in ipairs(Config.CatalogSeed) do
+                MySQL.insert.await(
+                    'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
+                    { branding.business, it.id, it.category, it.label, it.price }
+                )
+            end
         end
     end
 end)
+
+-- NEW: ensure all businesses (moved up so it exists before onResourceStart handler)
+local function ensureAllBusinesses()
+    for _, branding in pairs(Config.BusinessBranding or {}) do
+        local row = MySQL.single.await(
+            'SELECT business FROM pf_business WHERE business = ? LIMIT 1',
+            { branding.business }
+        )
+        if not row then
+            MySQL.insert.await(
+                'INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, open, tax) VALUES (?, ?, ?, ?, ?, ?, ?)',
+
+                {
+                    branding.business,
+                    branding.name,
+                    branding.primary_color,
+                    branding.secondary_color,
+                    branding.logo or '',
+                    branding.open or 1,
+                    branding.tax or 0.05
+                }
+            )
+        end
+    end
+end
 
 -- ============================================================================
 -- Management: GET payload
@@ -104,9 +142,12 @@ end)
 RegisterNetEvent('pf_mech:mgmt:get', function()
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
-    ensureBusiness()
-
-    local businessKey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
+    
+    local businessKey = getPlayerBusiness(Player)
+    if not businessKey then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Not a mechanic.' })
+        return
+    end
 
     -- Branding
     local brand = MySQL.single.await(
@@ -224,15 +265,16 @@ RegisterNetEvent('pf_mech:mgmt:saveBranding', function(data)
         return
     end
 
-    ensureBusiness()
-    local bkey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
+    local businessKey = getPlayerBusiness(Player)
+    if not businessKey then return end
 
-    local name  = (data and data.name) or Config.DEFAULT_BRANDING.name
-    local prim  = (data and data.primary_color) or Config.DEFAULT_BRANDING.primary_color
-    local sec   = (data and data.secondary_color) or Config.DEFAULT_BRANDING.secondary_color
+    local branding = Config.BusinessBranding[businessKey] or {}
+    local name  = (data and data.name) or branding.name
+    local prim  = (data and data.primary_color) or branding.primary_color
+    local sec   = (data and data.secondary_color) or branding.secondary_color
     local logo  = (data and data.logo) or ''
     local open  = (data and data.open) and 1 or 0
-    local tax   = tonumber(data and data.tax) or (Config.DEFAULT_BRANDING.tax or 0.05)
+    local tax   = tonumber(data and data.tax) or (branding.tax or 0.05)
 
     MySQL.execute.await(
         [[INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, open, tax)
@@ -240,7 +282,7 @@ RegisterNetEvent('pf_mech:mgmt:saveBranding', function(data)
           ON DUPLICATE KEY UPDATE
             name = VALUES(name), primary_color = VALUES(primary_color), secondary_color = VALUES(secondary_color),
             logo = VALUES(logo), open = VALUES(open), tax = VALUES(tax)]],
-        { bkey, name, prim, sec, logo, open, tax }
+        { businessKey, name, prim, sec, logo, open, tax }
     )
 
     TriggerClientEvent('pf_mech:toast', src, { text = 'Branding saved.' })
@@ -259,35 +301,36 @@ RegisterNetEvent('pf_mech:mgmt:updatePrice', function(payload)
         TriggerClientEvent('pf_mech:toast', src, { text = 'Not allowed.' })
         return
     end
+
+    local businessKey = getPlayerBusiness(Player)
+    if not businessKey then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Invalid job.' })
+        return
+    end
+
     local itemId = payload and payload.item_id
     local label  = payload and payload.label or ''
     local price  = tonumber(payload and payload.price) or 0
     if not itemId or itemId == '' then return end
 
-    ensureBusiness()
-    local bkey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
-
-    -- Find existing row
     local row = MySQL.single.await(
         'SELECT item_id FROM pf_pos_items WHERE business = ? AND item_id = ? LIMIT 1',
-        { bkey, itemId }
+        { businessKey, itemId }
     )
 
     if row then
         MySQL.update.await(
             'UPDATE pf_pos_items SET label = ?, price = ? WHERE business = ? AND item_id = ?',
-            { label, price, bkey, itemId }
+            { label, price, businessKey, itemId }
         )
     else
-        -- Unknown item id -> insert under "General"
         MySQL.insert.await(
             'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
-            { bkey, itemId, 'General', label, price }
+            { businessKey, itemId, 'General', label, price }
         )
     end
 
     TriggerClientEvent('pf_mech:toast', src, { text = ('Price updated: %s'):format(label) })
-    -- Refresh management + POS
     TriggerClientEvent('pf_mech:mgmt:get', src)
 end)
 
@@ -304,7 +347,12 @@ RegisterNetEvent('pf_mech:mgmt:updateEmployee', function(p)
     end
     if not p or not p.cid then return end
 
-    local bkey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
+    local businessKey = getPlayerBusiness(Player)
+    if not businessKey then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Invalid job.' })
+        return
+    end
+
     local grade  = tonumber(p.grade) or 0
     local salary = tonumber(p.salary) or 0
     local avatar = p.avatar or ''
@@ -313,13 +361,13 @@ RegisterNetEvent('pf_mech:mgmt:updateEmployee', function(p)
         [[INSERT INTO pf_employees (citizenid, business, grade, salary, avatar)
             VALUES (?, ?, ?, ?, ?)
           ON DUPLICATE KEY UPDATE grade = VALUES(grade), salary = VALUES(salary), avatar = VALUES(avatar)]],
-        { p.cid, bkey, grade, salary, avatar }
+        { p.cid, businessKey, grade, salary, avatar }
     )
 
-    -- If the player is online, also update their job grade (optional; comment if not desired)
     local Target = QBCore.Functions.GetPlayerByCitizenId(p.cid)
-    if Target and Target.PlayerData and Target.PlayerData.job and Target.PlayerData.job.name == (Config.Job or 'mechanic') then
-        Target.Functions.SetJob(Config.Job or 'mechanic', grade)
+    if Target and Target.PlayerData and Target.PlayerData.job
+        and Config.IsMechanicJob(Target.PlayerData.job.name) then
+        Target.Functions.SetJob(Target.PlayerData.job.name, grade)
     end
 
     TriggerClientEvent('pf_mech:toast', src, { text = 'Employee saved.' })
@@ -342,15 +390,19 @@ RegisterNetEvent('pos:requestCharge', function(data)
         subtotal = subtotal + ((tonumber(it.price) or 0) * (tonumber(it.qty) or 1))
     end
 
-    local bkey = Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')
-    local brand = MySQL.single.await('SELECT tax FROM pf_business WHERE business = ? LIMIT 1', { bkey }) or {}
+    local seller = QBCore.Functions.GetPlayer(src)
+    local businessKey = getPlayerBusiness(seller) or (Config.DEFAULT_BRANDING.business)
+    local brand = MySQL.single.await(
+        'SELECT tax FROM pf_business WHERE business = ? LIMIT 1',
+        { businessKey }
+    ) or {}
     local taxRate = tonumber(brand.tax or Config.DEFAULT_BRANDING.tax or 0.05)
     local tax = math.floor((subtotal * taxRate) + 0.5)
     local total = subtotal + tax
 
     local invoice = {
-        id = ('%s-%d-%d'):format(bkey, src, os.time()),
-        business = bkey,
+        id = ('%s-%d-%d'):format(businessKey, src, os.time()),
+        business = businessKey,
         from = src,
         to = targetSrc,
         items = items,
@@ -358,7 +410,6 @@ RegisterNetEvent('pos:requestCharge', function(data)
         tax = tax,
         total = total
     }
-
     TriggerClientEvent('pos:payPrompt', targetSrc, invoice)
 end)
 
@@ -378,34 +429,30 @@ RegisterNetEvent('pos:customerPay', function(data)
 
     local payer = QBCore.Functions.GetPlayer(src)
     local seller = QBCore.Functions.GetPlayer(inv.from)
+    if not payer then return end
 
-    -- Simple money handling (adapt to your economy)
     if method == 'cash' then
-        if payer.Functions.RemoveMoney('cash', inv.total, 'mechanic-pos') then
-            if seller then seller.Functions.AddMoney('cash', inv.total, 'mechanic-pos') end
-        else
+        if not payer.Functions.RemoveMoney('cash', inv.total, 'mechanic-pos') then
             TriggerClientEvent('pf_mech:toast', src, { text = 'Not enough cash.' })
             return
         end
-    else -- card/bank
-        if payer.Functions.RemoveMoney('bank', inv.total, 'mechanic-pos') then
-            if seller then seller.Functions.AddMoney('bank', inv.total, 'mechanic-pos') end
-        else
+        if seller then seller.Functions.AddMoney('cash', inv.total, 'mechanic-pos') end
+    else
+        if not payer.Functions.RemoveMoney('bank', inv.total, 'mechanic-pos') then
             TriggerClientEvent('pf_mech:toast', src, { text = 'Card declined.' })
             return
         end
+        if seller then seller.Functions.AddMoney('bank', inv.total, 'mechanic-pos') end
     end
 
-    -- Record sale
+    local businessKey = inv.business or (seller and getPlayerBusiness(seller)) or Config.DEFAULT_BRANDING.business
     MySQL.insert.await(
         'INSERT INTO pf_sales (business, src, target, amount, tax, total, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())',
-        { inv.business or (Config.DEFAULT_BRANDING.business or (Config.Job or 'mechanic')), inv.from or 0, inv.to or src, inv.subtotal or 0, inv.tax or 0, inv.total or 0 }
+        { businessKey, inv.from or 0, inv.to or src, inv.subtotal or 0, inv.tax or 0, inv.total or 0 }
     )
 
-    TriggerClientEvent('pf_mech:toast', src,    { text = 'Paid ' .. tostring(inv.total) })
-    TriggerClientEvent('pf_mech:toast', inv.from or 0, { text = 'Payment received.' })
-
-    -- Close modal on both ends
+    TriggerClientEvent('pf_mech:toast', src, { text = 'Paid ' .. tostring(inv.total) })
+    if inv.from then TriggerClientEvent('pf_mech:toast', inv.from, { text = 'Payment received.' }) end
     TriggerClientEvent('pay:close', src)
     if inv.from then TriggerClientEvent('pay:close', inv.from) end
 end)
@@ -503,15 +550,6 @@ AddEventHandler('playerDropped', function(_, src)
     stopNpcFeedFor(src)
 end)
 
-QBCore.Functions.CreateUseableItem("mech_tablet", function(source)
-    local Player = QBCore.Functions.GetPlayer(source)
-    if Player.PlayerData.job.name == 'mechanic' then
-        TriggerClientEvent('pf-mechanicjob:client:useMechTablet', source)
-    else
-        TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
-    end
-end)
-
 -- Register performance parts
 local performanceParts = {
     "engine1", "engine2", "engine3", "engine4", "engine5",
@@ -561,30 +599,48 @@ RegisterNetEvent('pf_mech:usePart', function(itemName, vehNetId, jobId, px, py, 
     end
 end)
 
--- map partKey -> item name used in inventory
+-- map partKey -> item name used in inventory (ADD MISSING ENTRIES)
 local PartToItem = {
   engine_part = 'engine_part',
   body_part   = 'body_part',
   sparkplugs  = 'sparkplugs',
   carbattery  = 'carbattery',
+  alternator  = 'alternator',
   engine_oil  = 'engine_oil',
   oil_filter  = 'oil_filter',
   susp_arm    = 'susp_arm',
   axleparts   = 'axleparts',
   tire_new    = 'tire_new',
+  brakes      = 'brake_pads',       -- FIX: brakes uses brake_pads item
+  fuel_injector = 'fuel_injector',  -- NEW
+  powersteeringpump = 'powersteeringpump', -- NEW
+  radiator    = 'radiator',         -- NEW
+  power_steering_fluid = 'power_steering_fluid', -- NEW
+  transmissionfluid = 'transmissionfluid', -- NEW
+  brakefluid  = 'brakefluid',       -- NEW
+  coolant     = 'coolant',          -- NEW
 }
 
--- map partKey -> data used when applying repair to clients
+-- map partKey -> data used when applying repair to clients (ADD MISSING ENTRIES)
 local PartApplyInfo = {
   engine_part = { action = 'repair', type = 'engine' },
   body_part   = { action = 'repair', type = 'body' },
   sparkplugs  = { action = 'repair', type = 'sparkplugs' },
   carbattery  = { action = 'repair', type = 'battery' },
+  alternator  = { action = 'repair', type = 'alternator' },
   engine_oil  = { action = 'repair', type = 'oil' },
-  oil_filter  = { action = 'repair', type = 'oil' },
+  oil_filter  = { action = 'repair', type = 'oil_filter' },
   susp_arm    = { action = 'repair', type = 'suspension' },
   axleparts   = { action = 'repair', type = 'axle' },
   tire_new    = { action = 'tire',   type = 'tire' },
+  brakes      = { action = 'repair', type = 'brakes' },       -- NEW
+  fuel_injector = { action = 'repair', type = 'fuel_injector' }, -- NEW
+  powersteeringpump = { action = 'repair', type = 'powersteeringpump' }, -- NEW
+  radiator    = { action = 'repair', type = 'radiator' },     -- NEW
+  power_steering_fluid = { action = 'repair', type = 'power_steering_fluid' }, -- NEW
+  transmissionfluid = { action = 'repair', type = 'transmissionfluid' }, -- NEW
+  brakefluid  = { action = 'repair', type = 'brakefluid' },   -- NEW
+  coolant     = { action = 'repair', type = 'coolant' },      -- NEW
 }
 
 -- callback used by client to attempt a repair (consumes items and broadcasts apply)
@@ -606,6 +662,55 @@ QBCore.Functions.CreateCallback('pf_mech:server:attemptRepair', function(source,
     if not removed then
         cb(false, 'Failed to remove items')
         return
+    end
+
+    -- NEW: Get the vehicle entity and update partDamage directly on server
+    local veh = NetworkGetEntityFromNetworkId(vehNetId)
+    if veh and DoesEntityExist(veh) then
+        local state = Entity(veh).state
+        local damage = state.partDamage or {}
+        
+        -- Repair the specific part
+        if partKey == 'alternator' then
+            damage.alternator = 0
+        elseif partKey == 'engine_oil' or partKey == 'oil' then
+            damage.oil = 0
+        elseif partKey == 'oil_filter' then
+            damage.oil_filter = 0
+        elseif partKey == 'carbattery' then
+            damage.carbattery = 0
+        elseif partKey == 'sparkplugs' then
+            damage.sparkplugs = math.max(0, (damage.sparkplugs or 0) - (20 * count))
+        elseif partKey == 'brakes' or partKey == 'brake_pads' then
+            damage.brakes = math.max(0, (damage.brakes or 0) - (25 * count))
+        elseif partKey == 'susp_arm' then
+            damage.suspension = math.max(0, (damage.suspension or 0) - (25 * count))
+        elseif partKey == 'axleparts' then
+            damage.axle = math.max(0, (damage.axle or 0) - (25 * count))
+        elseif partKey == 'fuel_injector' then
+            damage.fuel_injector = math.max(0, (damage.fuel_injector or 0) - (25 * count))
+        elseif partKey == 'powersteeringpump' then
+            damage.powersteeringpump = 0
+        elseif partKey == 'radiator' then
+            damage.radiator = 0
+        elseif partKey == 'power_steering_fluid' then
+            damage.power_steering_fluid = 0
+        elseif partKey == 'transmissionfluid' then
+            damage.transmissionfluid = 0
+        elseif partKey == 'brakefluid' then
+            damage.brakefluid = 0
+        elseif partKey == 'coolant' then
+            damage.coolant = 0
+        elseif partKey == 'engine_part' then
+            -- Engine part reduces engine damage (not body)
+            damage.engine = math.max(0, (damage.engine or 0) - (15 * count))
+        elseif partKey == 'body_part' then
+            -- Body part reduces body damage (not engine)
+            damage.body = math.max(0, (damage.body or 0) - (20 * count))
+        end
+        
+        -- Update the state
+        state:set('partDamage', damage, true)
     end
 
     local info = PartApplyInfo[partKey] or { action = 'repair', type = partKey }
@@ -658,11 +763,6 @@ local function RegisterItems()
             TriggerClientEvent('pf-mechanicjob:client:useWheels', source, item)
         end)
     end
-    
-    -- Register mechanic_tools
-    QBCore.Functions.CreateUseableItem('mechanic_tools', function(source, itemInfo)
-        TriggerClientEvent('pf-mechanicjob:client:useMechanicTools', source)
-    end)
 end
 
 AddEventHandler('onResourceStart', function(resourceName)
@@ -678,34 +778,6 @@ RegisterNetEvent('pf_mech:server:removeMod', function(item)
 
     Player.Functions.RemoveItem(item, 1)
     TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[item], "remove")
-end)
-
--- Add this new event handler
-RegisterNetEvent('pf_mech:server:applyMod', function(data)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-    
-    -- Verify player has the item
-    local item = Player.Functions.GetItemByName(data.item)
-    if not item then
-        TriggerClientEvent('QBCore:Notify', src, 'Missing required part', 'error')
-        return
-    end
-    
-    -- Remove item
-    if Player.Functions.RemoveItem(data.item, 1) then
-        -- Broadcast mod application to all clients (to ensure sync)
-        TriggerClientEvent('pf_mech:client:modApplied', -1, {
-            vehicle = data.vehicle,
-            modType = data.modType,
-            modIndex = data.modIndex
-        })
-        
-        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[data.item], "remove")
-    else
-        TriggerClientEvent('QBCore:Notify', src, 'Failed to install part', 'error')
-    end
 end)
 
 -- Server-side: apply cosmetic mod (called from client after progress completes)
@@ -776,74 +848,6 @@ RegisterNetEvent('pf_mech:server:applyPaint', function(payload)
     TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
 end)
 
--- Server-side: apply cosmetic mod (called from client after progress completes)
-RegisterNetEvent('pf_mech:server:applyMod', function(data)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player or not data then return end
-
-    local itemName = data.item
-    local modType  = data.modType
-    local modIndex = data.modIndex
-    local vehicleNet = data.vehicle
-
-    -- verify item exists in inventory
-    local item = Player.Functions.GetItemByName(itemName)
-    if not item then
-        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: ' .. tostring(itemName), 'error')
-        return
-    end
-
-    -- remove 1 item
-    local removed = Player.Functions.RemoveItem(itemName, 1)
-    if not removed then
-        TriggerClientEvent('QBCore:Notify', src, 'Failed to remove item: ' .. tostring(itemName), 'error')
-        return
-    end
-
-    -- Broadcast to all clients to apply the mod (keeps visuals in sync)
-    TriggerClientEvent('pf_mech:client:modApplied', -1, {
-        vehicle = vehicleNet,
-        modType = modType,
-        modIndex = modIndex
-    })
-
-    -- Show item box to user who used the item
-    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
-end)
-
--- Server: apply paint (consumes 1 paint_kit / tint_supplies)
-RegisterNetEvent('pf_mech:server:applyPaint', function(payload)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player or not payload or not payload.item then return end
-
-    local itemName = payload.item
-    local it = Player.Functions.GetItemByName(itemName)
-    if not it then
-        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: '..tostring(itemName), 'error')
-        return
-    end
-
-    local removed = Player.Functions.RemoveItem(itemName, 1)
-    if not removed then
-        TriggerClientEvent('QBCore:Notify', src, 'Failed to consume '..tostring(itemName), 'error')
-        return
-    end
-
-    -- Broadcast to all clients
-    TriggerClientEvent('pf_mech:client:paintApplied', -1, {
-        vehicle = payload.vehicle,
-        item = itemName,
-        category = payload.category,
-        rgb = payload.rgb,
-        preset = payload.preset,
-        tintLevel = payload.tintLevel  -- pass tintLevel for window tint
-    })
-
-    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
-end)
-
 -- Server: apply wheel mod
 RegisterNetEvent('pf_mech:server:applyWheels', function(payload)
     local src = source
@@ -872,5 +876,74 @@ RegisterNetEvent('pf_mech:server:applyWheels', function(payload)
     })
 
     TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+end)
+
+-- Service Book: add entry
+RegisterNetEvent('pf_mech:service:addEntry', function(plate, note)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    plate = tostring(plate or ''):upper():gsub('%s+', '')
+    note = tostring(note or ''):sub(1, 500)
+    if plate == '' or note == '' then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Missing plate or note.' })
+        return
+    end
+    local cid = Player.PlayerData.citizenid
+    local author = getNameFromPlayersTable(cid)
+
+    MySQL.insert.await(
+        'INSERT INTO pf_service_log (plate, citizenid, author, note, created_at) VALUES (?, ?, ?, ?, NOW())',
+        { plate, cid, author, note }
+    )
+    TriggerClientEvent('pf_mech:toast', src, { text = 'Service entry saved.' })
+end)
+
+-- Service Book: get entries
+QBCore.Functions.CreateCallback('pf_mech:service:get', function(source, cb, plate)
+    plate = tostring(plate or ''):upper():gsub('%s+', '')
+    if plate == '' then cb({}) return end
+    local rows = MySQL.query.await(
+        'SELECT author, note, DATE_FORMAT(created_at,"%Y-%m-%d %H:%i") AS at FROM pf_service_log WHERE plate = ? ORDER BY created_at DESC LIMIT 20',
+        { plate }
+    ) or {}
+    cb(rows)
+end)
+
+-- Helper: ensure all businesses exist in database
+local function ensureAllBusinesses()
+    for jobName, branding in pairs(Config.BusinessBranding or {}) do
+        local row = MySQL.single.await('SELECT business FROM pf_business WHERE business = ? LIMIT 1', { branding.business })
+        if not row then
+            MySQL.insert.await(
+                'INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, open, tax) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                {
+                    branding.business,
+                    branding.name,
+                    branding.primary_color,
+                    branding.secondary_color,
+                    branding.logo or '',
+                    branding.open or 1,
+                    branding.tax or 0.05
+                }
+            )
+        end
+    end
+end
+
+-- END OF FILE
+
+-- Allow clients to request a server-side statebag write (fallback for older artifacts)
+RegisterNetEvent('pf_mech:server:setState', function(netId, key, value)
+    local src = source
+    if not netId or not key then return end
+    local ent = NetworkGetEntityFromNetworkId(netId)
+    if not ent or ent == 0 or not DoesEntityExist(ent) then return end
+
+    -- Optional: only allow driver/nearby or owner – kept simple here.
+    local st = Entity(ent).state
+    if st and st.set then
+        st:set(tostring(key), value, true)
+    end
 end)
 
