@@ -801,7 +801,7 @@ RegisterNetEvent('pf-mechanicjob:client:doRepairWithItems', function(data)
     end
 
     -- run progress; if cancelled, abort
-    if not DoProgress('Repairing '..(part:gsub('_',' '))..'...', progTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+    if not DoProgress('Repairing '..(part:gsub('_',' '))..'...', progTime, 'mini@repair', 'fixing_a_ped') then
         QBCore.Functions.Notify('Repair cancelled', 'error'); return
     end
 

@@ -187,3 +187,23 @@ QBCore.Functions.CreateCallback('pf-mechanicjob:server:consumeBrakePad', functio
         cb(false)
     end
 end)
+
+-- Diagnostics tool -> open tools menu
+QBCore.Functions.CreateUseableItem('diagnostic_tool', function(src, item)
+    TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', src)
+end)
+-- Common aliases (use whichever your server uses)
+QBCore.Functions.CreateUseableItem('mechanic_tools', function(src, item)
+    TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', src)
+end)
+QBCore.Functions.CreateUseableItem('mech_tools', function(src, item)
+    TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', src)
+end)
+
+-- Optional: tablet items still open the management tablet
+QBCore.Functions.CreateUseableItem('mech_tablet', function(src, item)
+    TriggerClientEvent('pf-mechanicjob:client:useMechTablet', src)
+end)
+QBCore.Functions.CreateUseableItem('mechanic_tablet', function(src, item)
+    TriggerClientEvent('pf-mechanicjob:client:useMechTablet', src)
+end)

@@ -947,3 +947,14 @@ RegisterNetEvent('pf_mech:server:setState', function(netId, key, value)
     end
 end)
 
+-- Relay welding VFX start/stop to all clients (sync prop net id)
+RegisterNetEvent('pf_mech:weld:start', function(netId)
+    if not netId then return end
+    TriggerClientEvent('pf_mech:weld:start', -1, netId)
+end)
+
+RegisterNetEvent('pf_mech:weld:stop', function(netId)
+    if not netId then return end
+    TriggerClientEvent('pf_mech:weld:stop', -1, netId)
+end)
+

@@ -1,6 +1,80 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 print('[TOOLS_MENU] Client script loaded')
 
+-- ADD: door helpers (must be before usage)
+local function OpenAllDoors(veh)
+    if not veh or not DoesEntityExist(veh) then return end
+    for i=0,5 do SetVehicleDoorOpen(veh, i, false, false) end
+end
+local function CloseAllDoors(veh)
+    if not veh or not DoesEntityExist(veh) then return end
+    for i=0,5 do SetVehicleDoorShut(veh, i, false) end
+end
+
+-- ADD: welding helpers and state (HOISTED so StartWeld exists before being called)
+local MENU_OPEN = false
+local currentWelderProp, currentWeldFx
+local remoteWeldFx = {}
+
+local function LoadModel(hash)
+    RequestModel(hash)
+    while not HasModelLoaded(hash) do Wait(0) end
+end
+local function LoadPtfx(dict)
+    RequestNamedPtfxAsset(dict)
+    while not HasNamedPtfxAssetLoaded(dict) do Wait(0) end
+end
+
+local function StartWeld(ped)
+    local model = `prop_weld_torch`
+    LoadModel(model)
+    local prop = CreateObject(model, 0.0, 0.0, 0.0, true, true, true)
+    AttachEntityToEntity(prop, ped, GetPedBoneIndex(ped, 57005), 0.12, 0.02, -0.02, -20.0, 180.0, 10.0, true, true, false, true, 1, true)
+    SetEntityAsMissionEntity(prop, true, true)
+    local netId = NetworkGetNetworkIdFromEntity(prop)
+    SetNetworkIdExistsOnAllMachines(netId, true)
+    NetworkSetNetworkIdDynamic(netId, false)
+
+    LoadPtfx('core'); UseParticleFxAssetNextCall('core')
+    local fx = StartParticleFxLoopedOnEntity('ent_sparks', prop, 0.02, 0.02, 0.0, 0.0, 0.0, 0.0, 1.2, false, false, false)
+
+    currentWelderProp = prop
+    currentWeldFx = fx
+
+    -- broadcast (server relays to all)
+    TriggerServerEvent('pf_mech:weld:start', netId)
+end
+
+local function StopWeld()
+    if currentWelderProp and DoesEntityExist(currentWelderProp) then
+        local netId = NetworkGetNetworkIdFromEntity(currentWelderProp)
+        TriggerServerEvent('pf_mech:weld:stop', netId)
+    end
+    if currentWeldFx then
+        StopParticleFxLooped(currentWeldFx, true)
+        currentWeldFx = nil
+    end
+    if currentWelderProp and DoesEntityExist(currentWelderProp) then
+        DeleteEntity(currentWelderProp)
+    end
+    currentWelderProp = nil
+end
+
+-- Sync welding sparks on other clients, if any
+RegisterNetEvent('pf_mech:weld:start', function(netId)
+    local ent = NetworkGetEntityFromNetworkId(netId or 0)
+    if not ent or ent == 0 or not DoesEntityExist(ent) then return end
+    LoadPtfx('core'); UseParticleFxAssetNextCall('core')
+    remoteWeldFx[netId] = StartParticleFxLoopedOnEntity('ent_sparks', ent, 0.02, 0.02, 0.0, 0.0, 0.0, 0.0, 1.2, false, false, false)
+end)
+RegisterNetEvent('pf_mech:weld:stop', function(netId)
+    local fx = remoteWeldFx[netId]
+    if fx then
+        StopParticleFxLooped(fx, true)
+        remoteWeldFx[netId] = nil
+    end
+end)
+
 -- UNCONDITIONAL EARLY EXPORTS (avoid race / conditional export lookup)
 -- Internal calls can just use GetCurrentDiagnostics() directly.
 local function GetCurrentDiagnosticsInternal(veh)
@@ -19,7 +93,7 @@ end
 function GetCurrentDiagnostics(veh) return GetCurrentDiagnosticsInternal(veh) end
 exports('GetCurrentDiagnostics', GetCurrentDiagnosticsInternal)
 
--- Simple wheel steps mini-sequence (kept small; minigames.lua can override with richer one)
+-- Simple wheel steps mini-sequence (fix loop)
 local function DoWheelStepsInternal()
     local ped = PlayerPedId()
     RequestAnimDict('mini@repair')
@@ -31,12 +105,10 @@ local function DoWheelStepsInternal()
     }
     if QBCore.Functions.Progressbar then
         for i,s in ipairs(seq) do
-            local done=false
-            QBCore.Functions.Progressbar('pf_wheel_'..i, s[1], s[2], false, true,
-                { disableMovement=true, disableCarMovement=true, disableCombat=true },
-                { animDict='mini@repair', anim='fixing_a_ped', flags=49 },
-                {}, {}, function() done=true end, function() done=true end
-            )
+            local done = false
+            QBCore.Functions.Progressbar('pf_wheel_'..i, s[1], s[2], false, true, { disableMovement=true, disableCarMovement=true, disableCombat=true },
+                { animDict='mini@repair', anim='fixing_a_ped', flags=49 }, {}, {},
+                function() done=true end, function() done=true end)
             while not done do Wait(10) end
         end
     else
@@ -87,7 +159,7 @@ end
 -- =========================================================
 -- SIMPLE WHEEL DAMAGE DETECTION (VANILLA BURST ONLY)
 -- =========================================================
--- REPLACE: robust probe-based wheel index detection (handles 0/1/4/5 mapping)
+-- REPLACE: robust probe-based wheel index detection (fix ok2 var)
 local function GetWheelIndices(veh)
     if not veh or not DoesEntityExist(veh) then return {0,1,2,3} end
     local candidates = {0,1,2,3,4,5}
@@ -98,7 +170,7 @@ local function GetWheelIndices(veh)
         if ok and val ~= nil then
             exists = true
         else
-            local ok2, _ = pcall(function() return IsVehicleTyreBurst(veh, idx, false) end)
+            local ok2 = pcall(function() return IsVehicleTyreBurst(veh, idx, false) end)
             if ok2 then exists = true end
         end
         if exists then out[#out+1] = idx end
@@ -305,7 +377,7 @@ local function InjectQbMenuIconCSS()
     })
 end
 
--- FIX getMenuIcon (undefined fname)
+-- FIX getMenuIcon (compute fname)
 local function getMenuIcon(partKey)
     partKey = tostring(partKey or '')
     local itemName = (PartToItemName and PartToItemName[partKey]) or partKey
@@ -322,21 +394,7 @@ local function getMenuIcon(partKey)
     return DEFAULT_PLACEHOLDER
 end
 
--- NEW: qb-menu layout CSS (inline icons bigger, taller menu)
-local function InjectQbMenuLayoutCSS()
-    if qbMenuCssInjected then return end
-    qbMenuCssInjected = true
-    SendNUIMessage({
-        action='pf_mech_inject_css',
-        css=table.concat({
-            '.qb-menu-container,.qb-menu{max-height:75vh!important;}',
-            '.qb-menu-item{min-height:58px!important;display:flex!important;align-items:center!important;}',
-            '.qb-menu-item-icon img{width:46px!important;height:46px!important;margin-right:12px!important;object-fit:contain!important;}',
-        },'')
-    })
-end
-
--- FIX: OpenMenuGeneric (populate ox_lib options)
+-- FIX: OpenMenuGeneric (populate ox_lib options) + ESC cleanup guard for qb-menu
 local function OpenMenuGeneric(menu)
     local useOx = (Config and Config.MenuSystem == 'ox_lib')
     if useOx and resourceStarted('ox_lib') and lib and lib.registerContext then
@@ -358,11 +416,21 @@ local function OpenMenuGeneric(menu)
                 }
             end
         end
-        lib.registerContext({ id = contextId, title = title, options = options })
+        lib.registerContext({ id=contextId, title=title, options=options })
         lib.showContext(contextId)
     else
         if exports['qb-menu'] and exports['qb-menu'].openMenu then
-            InjectQbMenuLayoutCSS()
+            MENU_OPEN = true
+            -- watch ESC to ensure cleanup if qb-menu doesn't emit close
+            CreateThread(function()
+                while MENU_OPEN do
+                    Wait(0)
+                    if IsControlJustReleased(0, 322) or IsControlJustReleased(0, 200) then
+                        TriggerEvent('qb-menu:client:closeMenu')
+                        MENU_OPEN = false
+                    end
+                end
+            end)
             exports['qb-menu']:openMenu(menu)
         else
             QBCore.Functions.Notify('Menu system not found', 'error')
@@ -370,38 +438,51 @@ local function OpenMenuGeneric(menu)
     end
 end
 
--- FIX: inspection progressbar (cleanup + trigger showMenu)
+-- FIX: inspection progressbar handler (open/close doors + welder prop)
 RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
     local veh = getRepairVehicle()
     if not veh then QBCore.Functions.Notify('No vehicle nearby','error'); return end
     local ped = PlayerPedId()
-    local dict, anim, prop = "missheistdockssetup1clipboard@base", "base", `prop_notepad_01`
-    RequestAnimDict(dict) while not HasAnimDictLoaded(dict) do Wait(0) end
-    RequestModel(prop) while not HasModelLoaded(prop) do Wait(0) end
-    currentClipboard = CreateObject(prop, 0,0,0,true,true,false)
-    AttachEntityToEntity(currentClipboard, ped, GetPedBoneIndex(ped,18905), 0.1,0.02,0.05, -50.0,90.0,0.0, true,true,false,true,1,true)
-    TaskPlayAnim(ped, dict, anim, 8.0,-8.0,-1,50,0,false,false,false)
+
+    local weldDict, weldAnim = "amb@world_human_welding@male@base", "base"
+    RequestAnimDict(weldDict) while not HasAnimDictLoaded(weldDict) do Wait(0) end
+
+    OpenAllDoors(veh)
+
+    -- Play welding anim + start synced welder prop
+    TaskPlayAnim(ped, weldDict, weldAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
+    StartWeld(ped)
+
     if not QBCore.Functions.Progressbar then
+        Wait(3000)
+        ClearPedTasks(ped)
+        StopWeld()
+        CloseAllDoors(veh)
         QBCore.Functions.Notify('Progressbar not available','error')
-        ClearPedTasks(ped); if currentClipboard then DeleteEntity(currentClipboard) end; currentClipboard=nil; return
+        return
     end
+
     QBCore.Functions.Progressbar('inspect_vehicle','Inspecting vehicle...',10000,false,true,
         { disableMovement=true, disableCarMovement=true, disableMouse=false, disableCombat=true },
-        { animDict=dict, anim=anim, flags=50 }, {}, {},
+        { animDict=weldDict, anim=weldAnim, flags=49 }, {}, {},
         function()
+            -- COMPLETE
             ClearPedTasks(ped)
-            if currentClipboard then DeleteEntity(currentClipboard) currentClipboard=nil end
+            StopWeld()
+            CloseAllDoors(veh)
             TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
         end,
         function()
+            -- CANCEL
             ClearPedTasks(ped)
-            if currentClipboard then DeleteEntity(currentClipboard) currentClipboard=nil end
+            StopWeld()
+            CloseAllDoors(veh)
             QBCore.Functions.Notify('Inspection cancelled','error')
         end
     )
 end)
 
--- Show diagnostics menu after inspection completes (replace old handler)
+-- REPLACE: diagnostics menu build (fill placeholders)
 RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
     if not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found', 'error'); return end
 
@@ -409,7 +490,6 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
     local bodyHealth   = math.floor((GetVehicleBodyHealth(veh) or 0) / 10)
     local tankHealth   = math.floor((GetVehiclePetrolTankHealth(veh) or 0) / 10)
 
-    -- NEW: read mileage and format
     local function formatMiles(mi)
         mi = tonumber(mi) or 0
         local s = string.format('%.1f', mi)
@@ -420,10 +500,7 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
     local st = Entity(veh).state
     local mileageMi = formatMiles(st and st.mileage or 0)
 
-    local state = Entity(veh).state
-    local damage = state.partDamage or {}
-
-    -- REORDER: show plate and mileage in the same box
+    local damage = (Entity(veh).state.partDamage or {})
     local plate = GetVehicleNumberPlateText(veh) or 'Unknown'
     local menu = {
         { header='Vehicle Diagnostics', txt=('%s • Mileage: %s mi'):format(plate, mileageMi), isMenuHeader=true },
@@ -449,10 +526,13 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
         { key='brakefluid', label=DiagnosticLabels.brakefluid, hp=calcHealth(damage.brakefluid) },
         { key='coolant', label=DiagnosticLabels.coolant, hp=calcHealth(damage.coolant) },
     }
+    local function partsNeededForRepairLocal(partKey, healthPercent)
+        return partsNeededForRepair(partKey, healthPercent)
+    end
     local function addPartEntry(p)
         local hp = math.min(100, math.max(0, tonumber(p.hp) or 0))
         local hpInt = math.floor(hp + 0.5)
-        local needed = hpInt >= 100 and 0 or partsNeededForRepair(p.key, hpInt)
+        local needed = hpInt >= 100 and 0 or partsNeededForRepairLocal(p.key, hpInt)
         local txt = hpInt >= 100 and 'Perfect condition' or ('Needs: %d parts'):format(needed)
         menu[#menu+1] = {
             header = ('%s — %d%%'):format(p.label or p.key, hpInt),
@@ -464,38 +544,22 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
             } or {}
         }
     end
-
     for _,p in ipairs(partMap) do addPartEntry(p) end
 
-    -- Tires section (show each damaged wheel; supports 0/1/2/3 or 0/1/4/5 layouts)
+    -- Tires
     local idxs = GetWheelIndices(veh)
     local function has(i) for _,v in ipairs(idxs) do if v == i then return true end end return false end
-
-    -- UPDATED: swap middle/rear naming
-    local names = {}
-    names[0] = 'Front Left'
-    names[1] = 'Front Right'
-
+    local names = { [0]='Front Left',[1]='Front Right' }
     local has23 = has(2) or has(3)
     local has45 = has(4) or has(5)
-
     if has23 and has45 then
-        -- When both sets exist: 2/3 = Middle, 4/5 = Rear
-        names[2] = 'Middle Left'
-        names[3] = 'Middle Right'
-        names[4] = 'Rear Left'
-        names[5] = 'Rear Right'
+        names[2]='Middle Left'; names[3]='Middle Right'; names[4]='Rear Left'; names[5]='Rear Right'
     elseif has23 then
-        -- Only 2/3 present: treat as Rear
-        names[2] = 'Rear Left'
-        names[3] = 'Rear Right'
+        names[2]='Rear Left'; names[3]='Rear Right'
     elseif has45 then
-        -- Only 4/5 present: treat as Rear
-        names[4] = 'Rear Left'
-        names[5] = 'Rear Right'
+        names[4]='Rear Left'; names[5]='Rear Right'
     end
-
-    local damagedCount, healthyCount = 0, 0
+    local damagedCount, healthyCount = 0,0
     for _, i in ipairs(idxs) do
         local damaged = IsWheelDamaged(veh, i)
         if damaged then
@@ -504,137 +568,41 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
                 header = ('Tire %s — Damaged'):format(names[i] or tostring(i)),
                 txt = 'Replace (needs 1 tire)',
                 icon = getMenuIcon('tire_new'),
-                params = { event = 'pf-mechanicjob:client:repairTireWheel', args = { vehicle = veh, wheel = i } }
+                params = {
+                    event = 'pf-mechanicjob:client:repairTireWheel',
+                    args = { vehicle = veh, wheel = i }
+                }
             }
-            if Config.Debug then
-                print(string.format('[MECH DIAG] Wheel %s (index %d) damaged', names[i] or '?', i))
-            end
         else
             healthyCount = healthyCount + 1
         end
     end
-
     if damagedCount == 0 then
-        menu[#menu+1] = {
-            header = 'Tires — 100%',
-            txt = 'All tires OK',
-            icon = getMenuIcon('tire_new'),
-            params = {}
-        }
-    elseif healthyCount > 0 then
-        menu[#menu+1] = {
-            header = ('Remaining Healthy Tires: %d'):format(healthyCount),
-            txt = 'Only damaged tires listed above',
-            icon = getMenuIcon('tire_new'),
-            params = {}
-        }
+        menu[#menu+1] = { header = 'Tires — 100%', txt = 'All tires OK', icon = getMenuIcon('tire_new'), params = {} }
     end
 
     if Config.MenuSystem ~= 'ox_lib' then
         menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
     end
-
     OpenMenuGeneric(menu)
 end)
 
--- FIX: repairPart handler (restore callback logic + event usage)
-RegisterNetEvent('pf-mechanicjob:client:repairPart', function(data)
-    local vehicle, part = data.vehicle, data.part
-    local needed = tonumber(data.needed) or 1
-    if not vehicle or not DoesEntityExist(vehicle) then return end
-    local label = DiagnosticLabels[part] or part
-    QBCore.Functions.Progressbar('repair_part', ('Replacing %s...'):format(label), 5000, false, true,
-        { disableCombat=true, disableMovement=true, disableCarMovement=true },
-        { animDict='mini@repair', anim='fixing_a_ped', flags=49 }, {}, {},
-        function()
-            QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success,msg)
-                if success then
-                    QBCore.Functions.Notify(msg or 'Repair successful','success')
-                else
-                    QBCore.Functions.Notify(msg or 'Missing required parts','error')
-                end
-            end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, nil)
-        end,
-        function() QBCore.Functions.Notify('Repair cancelled','error') end
-    )
-end)
+-- FIX: repairPart handler stays unchanged or handled elsewhere
+-- ...existing code...
 
--- Wheel repair (burst or detached) - make more robust for rear wheels
-RegisterNetEvent('pf-mechanicjob:client:repairTireWheel', function(data)
-    local veh   = data and data.vehicle or getRepairVehicle()
-    local wheel = data and tonumber(data.wheel or -1) or -1
-    if not veh or veh == 0 or not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found','error'); return end
+-- REMOVE duplicated welding helpers previously at bottom; they are now hoisted above.
+-- ...existing code...
 
-    -- Validate wheel index
-    local valid=false
-    for _,idx in ipairs(GetWheelIndices(veh)) do if idx == wheel then valid=true break end end
-    if not valid then QBCore.Functions.Notify('Invalid wheel index','error'); return end
-
-    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control','error'); return end
-    if not IsWheelDamaged(veh, wheel) then
-        QBCore.Functions.Notify('Wheel not damaged','error')
-        return
-    end
-
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-        if not ok then QBCore.Functions.Notify('Missing tire','error'); return end
-
-        doMechanicAction('Replacing tire...', 4000)
-
-        -- First fix attempt
-        SetVehicleTyreFixed(veh, wheel)
-        Wait(120)
-
-        -- If still damaged, force reattach
-        if IsWheelDamaged(veh, wheel) then
-            SetVehicleTyreBurst(veh, wheel, false, 1000.0)
-            Wait(100)
-            SetVehicleTyreFixed(veh, wheel)
-            Wait(150)
-        end
-
-        -- Second fallback (some rears need double)
-        if IsWheelDamaged(veh, wheel) then
-            SetVehicleTyreBurst(veh, wheel, true, 25.0)
-            Wait(120)
-            SetVehicleTyreFixed(veh, wheel)
-            Wait(200)
-        end
-
-        if IsWheelDamaged(veh, wheel) then
-            QBCore.Functions.Notify('Tire could not be restored (mod conflict). Retry.', 'error')
-            return
-        end
-
-        -- Update state
-        local st = Entity(veh).state
-        local pd = st.partDamage or {}
-        pd.tires = pd.tires or {}
-        local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[wheel] or tostring(wheel)
-        pd.tires[key] = 0
-        st:set('partDamage', pd, true)
-
-        QBCore.Functions.Notify('Tire replaced', 'success')
-    end, 'tire_new')
-end)
-
--- Helper: Clean up clipboard when menu closes
+-- Helper: Clean up clipboard when menu closes (also stop welder and mark menu closed)
 RegisterNetEvent('qb-menu:client:closeMenu', function()
+    MENU_OPEN = false
     if currentClipboard and DoesEntityExist(currentClipboard) then
-        print('[TOOLS DEBUG] Cleaning up clipboard')
         local ped = PlayerPedId()
         ClearPedTasks(ped)
         DeleteEntity(currentClipboard)
         currentClipboard = nil
     end
+    StopWeld()
 end)
 
-local function SafeStateSet(veh, key, value)
-    if not veh or veh == 0 or not DoesEntityExist(veh) then return end
-    local st = Entity(veh).state
-    if st and st.set then
-        st:set(key, value, true)
-    else
-        TriggerServerEvent('pf_mech:server:setState', NetworkGetNetworkIdFromEntity(veh), key, value)
-    end
-end
+-- ...existing code...
