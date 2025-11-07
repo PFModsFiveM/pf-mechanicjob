@@ -87,16 +87,23 @@ end
 -- =========================================================
 -- SIMPLE WHEEL DAMAGE DETECTION (VANILLA BURST ONLY)
 -- =========================================================
+-- REPLACE: robust probe-based wheel index detection (handles 0/1/4/5 mapping)
 local function GetWheelIndices(veh)
     if not veh or not DoesEntityExist(veh) then return {0,1,2,3} end
-    local total = 4
-    pcall(function()
-        local n = GetVehicleNumberOfWheels(veh)
-        if n and n > 0 then total = n end
-    end)
-    if total <= 4 then return {0,1,2,3} end
+    local candidates = {0,1,2,3,4,5}
     local out = {}
-    for i=0, math.min(total-1, 5) do out[#out+1] = i end
+    for _, idx in ipairs(candidates) do
+        local exists = false
+        local ok, val = pcall(function() return GetVehicleTyreHealth(veh, idx) end)
+        if ok and val ~= nil then
+            exists = true
+        else
+            local ok2, _ = pcall(function() return IsVehicleTyreBurst(veh, idx, false) end)
+            if ok2 then exists = true end
+        end
+        if exists then out[#out+1] = idx end
+    end
+    if #out == 0 then out = {0,1,2,3} end
     return out
 end
 
@@ -337,12 +344,11 @@ local function OpenMenuGeneric(menu)
         local title, options = 'Diagnostics', {}
         for _, item in ipairs(menu) do
             if item.isMenuHeader then
-                title = item.header or title
+                if item.header then title = item.header end
             else
                 options[#options+1] = {
-                    title = item.header or 'Item',
+                    title = item.header or '',
                     description = item.txt or '',
-                    image = item.icon,
                     disabled = not (item.params and item.params.event),
                     onSelect = function()
                         if item.params and item.params.event then
@@ -352,7 +358,7 @@ local function OpenMenuGeneric(menu)
                 }
             end
         end
-        lib.registerContext({ id=contextId, title=title, options=options })
+        lib.registerContext({ id = contextId, title = title, options = options })
         lib.showContext(contextId)
     else
         if exports['qb-menu'] and exports['qb-menu'].openMenu then
@@ -453,31 +459,75 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
             txt = txt,
             icon = getMenuIcon(p.key),
             params = (hpInt < 100 and needed > 0) and {
-                event='pf-mechanicjob:client:repairPart',
-                args={ vehicle=veh, part=p.key, needed=needed }
+                event = 'pf-mechanicjob:client:openRepairSuggest',
+                args = { vehicle = veh, part = p.key, needed = needed }
             } or {}
         }
     end
 
     for _,p in ipairs(partMap) do addPartEntry(p) end
 
-    -- Tires (rear wheels were not showing due to placeholder & health-only damage)
-    local wheelNames = { [0]='Front Left',[1]='Front Right',[2]='Rear Left',[3]='Rear Right',[4]='Middle Left',[5]='Middle Right' }
-    local damagedCount=0
-    for _,i in ipairs(GetWheelIndices(veh)) do
+    -- Tires section (show each damaged wheel; supports 0/1/2/3 or 0/1/4/5 layouts)
+    local idxs = GetWheelIndices(veh)
+    local function has(i) for _,v in ipairs(idxs) do if v == i then return true end end return false end
+
+    -- UPDATED: swap middle/rear naming
+    local names = {}
+    names[0] = 'Front Left'
+    names[1] = 'Front Right'
+
+    local has23 = has(2) or has(3)
+    local has45 = has(4) or has(5)
+
+    if has23 and has45 then
+        -- When both sets exist: 2/3 = Middle, 4/5 = Rear
+        names[2] = 'Middle Left'
+        names[3] = 'Middle Right'
+        names[4] = 'Rear Left'
+        names[5] = 'Rear Right'
+    elseif has23 then
+        -- Only 2/3 present: treat as Rear
+        names[2] = 'Rear Left'
+        names[3] = 'Rear Right'
+    elseif has45 then
+        -- Only 4/5 present: treat as Rear
+        names[4] = 'Rear Left'
+        names[5] = 'Rear Right'
+    end
+
+    local damagedCount, healthyCount = 0, 0
+    for _, i in ipairs(idxs) do
         local damaged = IsWheelDamaged(veh, i)
         if damaged then
             damagedCount = damagedCount + 1
             menu[#menu+1] = {
-                header=('Tire %s — 0%%'):format(wheelNames[i] or i),
-                txt='Needs: 1 tire',
-                icon=getMenuIcon('tire_new'),
-                params={ event='pf-mechanicjob:client:repairTireWheel', args={ vehicle=veh, wheel=i } }
+                header = ('Tire %s — Damaged'):format(names[i] or tostring(i)),
+                txt = 'Replace (needs 1 tire)',
+                icon = getMenuIcon('tire_new'),
+                params = { event = 'pf-mechanicjob:client:repairTireWheel', args = { vehicle = veh, wheel = i } }
             }
+            if Config.Debug then
+                print(string.format('[MECH DIAG] Wheel %s (index %d) damaged', names[i] or '?', i))
+            end
+        else
+            healthyCount = healthyCount + 1
         end
     end
-    if damagedCount==0 then
-        menu[#menu+1] = { header='Tires — 100%', txt='Perfect condition', icon=getMenuIcon('tire_new'), params={} }
+
+    if damagedCount == 0 then
+        menu[#menu+1] = {
+            header = 'Tires — 100%',
+            txt = 'All tires OK',
+            icon = getMenuIcon('tire_new'),
+            params = {}
+        }
+    elseif healthyCount > 0 then
+        menu[#menu+1] = {
+            header = ('Remaining Healthy Tires: %d'):format(healthyCount),
+            txt = 'Only damaged tires listed above',
+            icon = getMenuIcon('tire_new'),
+            params = {}
+        }
     end
 
     if Config.MenuSystem ~= 'ox_lib' then

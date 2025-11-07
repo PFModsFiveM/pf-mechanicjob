@@ -447,6 +447,7 @@ end)
 
 -- ================== Part usage ==================
 local function posFront(veh) return GetOffsetFromEntityInWorldCoords(veh, 0.0, 1.8, 0.2) end
+local function posBack(veh)  return GetOffsetFromEntityInWorldCoords(veh, 0.0, -2.0, 0.2) end  -- NEW
 local function posUnder(veh) return GetOffsetFromEntityInWorldCoords(veh, 0.0, -0.3, -0.6) end
 local function nearestWheelPos(veh)
   local bones = { 'wheel_lf','wheel_rf','wheel_lr','wheel_rr','wheel_lm1','wheel_rm1' }
@@ -467,6 +468,7 @@ local function zoneOK(rule, veh)
   local ped = PlayerPedId(); local p = GetEntityCoords(ped)
   local target
   if rule.zone == 'front' then target = posFront(veh)
+  elseif rule.zone == 'back' then target = posBack(veh)  -- NEW
   elseif rule.zone == 'under' then target = posUnder(veh)
   elseif rule.zone == 'exterior' then target = GetOffsetFromEntityInWorldCoords(veh, 0.0, 0.5, 0.4)
   elseif rule.zone == 'wheel' then target = nearestWheelPos(veh) end
@@ -478,7 +480,8 @@ end
 -- cosmetic/performance picker UI
 local ModTypeNames = {
   [0]='Spoiler', [1]='Front Bumper', [2]='Rear Bumper', [3]='Side Skirt',
-  [4]='Exhaust', [6]='Grille', [7]='Hood', [10]='Roof'
+  [4]='Exhaust', [6]='Grille', [7]='Hood', [10]='Roof',
+  [23]='Front Wheels', [24]='Back Wheels' -- NEW
 }
 local ItemToModTypes = Config.ItemModMap or {
   bumper   = {1,2},
@@ -488,6 +491,7 @@ local ItemToModTypes = Config.ItemModMap or {
   roof     = {10},
   skirts   = {3},
   spoiler  = {0},
+  rims     = {23}, -- NEW
 }
 
 local function openModPicker(itemName, veh)
@@ -830,187 +834,97 @@ end)
 
 -- Add these near the top with other local variables (SINGLE DEFINITION ONLY)
 local CosmeticItems = {
-    spoiler = true,
-    bumper = true,
-    skirts = true,
-    exhaust = true,
-    rollcage = true,
-    hood = true,
-    roof = true
+    spoiler = true, bumper = true, skirts = true, exhaust = true, rollcage = true,
+    hood = true, roof = true, rims = true,
+    tint_supplies = true, -- changed
 }
 
+-- NEW: helper to check if player is within radius of a target point
+local function playerNear(target, radius)
+    local ped = PlayerPedId()
+    local p = GetEntityCoords(ped)
+    return (#(p - target)) <= (radius or 2.5)
+end
+
+-- NEW: tint picker and applier
+local function openTintPicker(veh)
+    if not DoesEntityExist(veh) then return end
+    local opts = {
+        { idx=0, label='None' },
+        { idx=1, label='Pure Black' },
+        { idx=2, label='Dark Smoke' },
+        { idx=3, label='Light Smoke' },
+        { idx=4, label='Stock' },
+        { idx=5, label='Limo' },
+        { idx=6, label='Green' },
+    }
+    local menu = { { header='Window Tint', isMenuHeader=true } }
+    for _, o in ipairs(opts) do
+        menu[#menu+1] = {
+            header = o.label,
+            txt = ('Apply tint %s'):format(o.label),
+            params = {
+                event = 'pf_mech:applyTint',
+                args = { vehicle = NetworkGetNetworkIdFromEntity(veh), tint = o.idx }
+            }
+        }
+    end
+    menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
+    exports['qb-menu']:openMenu(menu)
+end
+
+RegisterNetEvent('pf_mech:applyTint', function(args)
+    local veh = NetworkGetEntityFromNetworkId(args.vehicle or 0)
+    if not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found', 'error'); return end
+    if GetIsVehicleEngineRunning(veh) then QBCore.Functions.Notify('Turn engine off first', 'error') end
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then QBCore.Functions.Notify('Missing tint supplies', 'error'); return end
+        if not DoProgress('Applying window tint...', timeForAction('paint'), 'amb@world_human_vehicle_mechanic@male@base', 'base') then return end
+        SetVehicleWindowTint(veh, tonumber(args.tint) or 0)
+        QBCore.Functions.Notify('Window tint applied', 'success')
+    end, 'tint_supplies') -- changed
+end)
+
+-- Override cosmetic use handler to enforce zones and support tint
 RegisterNetEvent('pf-mechanicjob:client:usePart', function(item)
     local name = item and item.name or nil
     if not name then return end
-    
-    if CosmeticItems[name] then
-        local vehicle = nearbyVeh(3.0)
-        if vehicle == 0 then
-            QBCore.Functions.Notify('No vehicle nearby', 'error')
-            return
-        end
-        
-        SetVehicleModKit(vehicle, 0)
-        
-        if ItemToModTypes[name] then
-            openModPicker(name, vehicle)
-        else
-            QBCore.Functions.Notify('Invalid mod type', 'error')
-        end
-    end
-end)
-
--- Simple keyboard input fallback
-local function TextInput(title, maxLen)
-    AddTextEntry('PF_INPUT', title or 'Enter text')
-    DisplayOnscreenKeyboard(1, 'PF_INPUT', '', '', '', '', '', maxLen or 120)
-    while UpdateOnscreenKeyboard() == 0 do Wait(0) end
-    if GetOnscreenKeyboardResult() then
-        local r = GetOnscreenKeyboardResult()
-        if r and r ~= '' then return r end
-    end
-    return nil
-end
-
--- Use service book: show menu with Add Entry / View History
-RegisterNetEvent('pf-mechanicjob:client:use:service_book', function()
-    local veh = nearbyVeh(6.0)
-    if veh == 0 then QBCore.Functions.Notify('No vehicle nearby', 'error'); return end
-    local plate = GetVehicleNumberPlateText(veh) or 'UNKNOWN'
-    plate = plate:gsub('%s+', ''):upper()
-
-    local menu = {
-        { header = ('Service Book • %s'):format(plate), isMenuHeader = true },
-        { 
-            header = 'Add Service Entry', 
-            txt = 'Record new maintenance or repair note', 
-            params = { event = 'pf_mech:service:addEntryPrompt', args = { plate = plate } } 
-        },
-        { 
-            header = 'View Service History', 
-            txt = 'Browse past entries', 
-            params = { event = 'pf_mech:service:viewHistory', args = { plate = plate } } 
-        },
-        { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
-    }
-    exports['qb-menu']:openMenu(menu)
-end)
-
--- Add entry: prompt for text input
-RegisterNetEvent('pf_mech:service:addEntryPrompt', function(args)
-    local plate = args.plate
-    local note = TextInput(('Service note for %s'):format(plate), 500)
-    if not note then QBCore.Functions.Notify('Cancelled', 'error'); return end
-    TriggerServerEvent('pf_mech:service:addEntry', plate, note)
-    QBCore.Functions.Notify('Service entry saved', 'success')
-end)
-
--- View history
-RegisterNetEvent('pf_mech:service:viewHistory', function(args)
-    local plate = args.plate
-    QBCore.Functions.TriggerCallback('pf_mech:service:get', function(rows)
-        local menu = { { header = ('Service History • %s'):format(plate), isMenuHeader = true } }
-        if #rows == 0 then
-            menu[#menu+1] = { header = 'No entries found', txt = '', params = {} }
-        else
-            for _, r in ipairs(rows) do
-                menu[#menu+1] = { 
-                    header = (r.author or 'Unknown') .. ' • ' .. (r.at or ''), 
-                    txt = r.note or '', 
-                    params = {} 
-                }
-            end
-        end
-        menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
-        exports['qb-menu']:openMenu(menu)
-    end, plate)
-end)
-
--- Inject helper wrappers (after other local helpers)
-local function GetWheelIndices(veh)
-    local indices = {}
-    pcall(function()
-        local n = GetVehicleNumberOfWheels(veh)
-        if not n or n <= 0 then n = 4 end
-        if n <= 4 then
-            indices = {0,1,2,3}
-        else
-            for i=0, math.min(n-1, 5) do indices[#indices+1]=i end
-        end
-    end)
-    if #indices == 0 then indices = {0,1,2,3} end
-    return indices
-end
-
--- REPLACE previous WheelDamaged wrapper with a version that DOES NOT use exports
-local function ResolveWheelDamaged(veh, idx)
-    -- Prefer global function from tools_menu.lua
-    if type(_G.IsWheelDamaged) == 'function' then
-        local ok, val = pcall(_G.IsWheelDamaged, veh, idx)
-        if ok then return val end
-    end
-    -- Fallback: vanilla burst checks
-    local b1,b2=false,false
-    pcall(function()
-        b1 = IsVehicleTyreBurst(veh, idx, false)
-        b2 = IsVehicleTyreBurst(veh, idx, true)
-    end)
-    return b1 or b2
-end
-
--- SAFETY: ensure global IsWheelDamaged exists (prevents nil field errors)
-if type(IsWheelDamaged) ~= 'function' then
-    function IsWheelDamaged(veh, idx)
-        if not veh or not DoesEntityExist(veh) then return false end
-        local b1,b2=false,false
-        pcall(function()
-            b1 = IsVehicleTyreBurst(veh, idx, false)
-            b2 = IsVehicleTyreBurst(veh, idx, true)
-        end)
-        return b1 or b2
-    end
-end
-
--- REPLACE tire_new handler loop to use simple burst checks
-RegisterNetEvent('pf-mechanicjob:client:use:tire_new', function()
-    local veh = getRepairVehicle()
-    if not veh then QBCore.Functions.Notify('No vehicle nearby', 'error'); return end
-    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control of vehicle', 'error'); return end
-
-    local wheelIdx = -1
-    for _, i in ipairs(GetWheelIndices(veh)) do
-        -- Simple burst check only
-        if IsVehicleTyreBurst(veh, i, false) or IsVehicleTyreBurst(veh, i, true) then
-            wheelIdx = i
-            break
-        end
-    end
-    if wheelIdx == -1 then
-        QBCore.Functions.Notify('No damaged tire found', 'error')
+    if name == 'tint_supplies' or name == 'tint' or name == 'window_tint' then
+        local vehicle = nearbyVeh(5.0)
+        if vehicle == 0 then QBCore.Functions.Notify('No vehicle nearby', 'error'); return end
+        openTintPicker(vehicle)
         return
     end
 
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-        if not ok then QBCore.Functions.Notify('Missing tire', 'error'); return end
+    if not CosmeticItems[name] then return end
 
-        local didSteps = false
-        pcall(function() didSteps = exports['pf-mechanicjob']:DoWheelSteps() == true end)
-        if not didSteps then
-            DoProgress('Replacing tire...', 4000, 'amb@world_human_vehicle_mechanic@male@base', 'base')
+    local vehicle = nearbyVeh(3.5)
+    if vehicle == 0 then
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return
+    end
+
+    -- Enforce placement zones
+    if name == 'bumper' or name == 'vehicle_bumper' then
+        local nearF = playerNear(posFront(vehicle), 2.8)
+        local nearB = playerNear(posBack(vehicle), 2.8)
+        if not (nearF or nearB) then
+            QBCore.Functions.Notify('Move to the front or the back of the car to fit a bumper', 'error')
+            return
         end
+    elseif name == 'hood' then
+        local nearF = playerNear(posFront(vehicle), 2.8)
+        if not nearF then
+            QBCore.Functions.Notify('Move to the front of the car to fit a hood', 'error')
+            return
+        end
+    end
+    -- exhaust, rims, spoiler, roof, skirts: anywhere
 
-        -- Fix tire
-        SetVehicleTyreFixed(veh, wheelIdx)
-        Wait(100)
-
-        -- Update state
-        local st = Entity(veh).state
-        local pd = st.partDamage or {}
-        pd.tires = pd.tires or {}
-        local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[wheelIdx] or tostring(wheelIdx)
-        pd.tires[key] = 0
-        st:set('partDamage', pd, true)
-
-        QBCore.Functions.Notify('Tire replaced', 'success')
-    end, 'tire_new')
+    SetVehicleModKit(vehicle, 0)
+    if ItemToModTypes[name] then
+        openModPicker(name, vehicle)
+    else
+        QBCore.Functions.Notify('Invalid mod type', 'error')
+    end
 end)

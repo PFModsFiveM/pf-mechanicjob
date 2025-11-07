@@ -28,6 +28,7 @@ Config.AllowedJobs = {
 -- Items that ANYONE can use (no job requirement)
 Config.PublicItems = {
     'repair_kit',
+    'tint_supplies', -- renamed from tint
 }
 
 -- ============================================================================
@@ -187,6 +188,7 @@ Config.PaintPalette = {
 -- Minimal Item->mod mapping used by client/main.lua
 Config.ItemModMap = {
   bumper={1,2}, vehicle_bumper={1,2}, exhaust={4}, hood={7}, roof={10}, skirts={3}, spoiler={0},
+  rims={23}, -- NEW: wheel rims use modType 23
 }
 
 -- Deduped PartRules (unique keys only)

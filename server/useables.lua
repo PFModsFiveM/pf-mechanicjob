@@ -144,6 +144,27 @@ QBCore.Functions.CreateUseableItem('tire_new', function(source)
     TriggerClientEvent('pf-mechanicjob:client:use:tire_new', source)
 end)
 
+-- Window tint supplies -> open client tint picker
+QBCore.Functions.CreateUseableItem('tint_supplies', function(src, item)
+    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+end)
+
+-- Optional: legacy/aliases
+QBCore.Functions.CreateUseableItem('tint', function(src, item)
+    TriggerClientEvent('pf-mechanicjob:client:usePart', src, { name = 'tint_supplies', label = item.label })
+end)
+QBCore.Functions.CreateUseableItem('window_tint', function(src, item)
+    TriggerClientEvent('pf-mechanicjob:client:usePart', src, { name = 'tint_supplies', label = item.label })
+end)
+
+-- Optional: cosmetics route to the same handler
+QBCore.Functions.CreateUseableItem('bumper', function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
+QBCore.Functions.CreateUseableItem('hood',   function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
+QBCore.Functions.CreateUseableItem('spoiler',function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
+QBCore.Functions.CreateUseableItem('skirts', function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
+QBCore.Functions.CreateUseableItem('exhaust',function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
+QBCore.Functions.CreateUseableItem('rims',   function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
+
 -- Callback for consuming brake pads atomically
 QBCore.Functions.CreateCallback('pf-mechanicjob:server:consumeBrakePad', function(source, cb)
     local Player = QBCore.Functions.GetPlayer(source)
