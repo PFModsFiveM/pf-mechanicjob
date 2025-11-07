@@ -395,15 +395,32 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
     )
 end)
 
--- FIX: diagnostics menu (restore entries & tire rows)
+-- Show diagnostics menu after inspection completes (replace old handler)
 RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
-    if not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found','error'); return end
-    local engineHealth = math.floor((GetVehicleEngineHealth(veh) or 0)/10)
-    local bodyHealth   = math.floor((GetVehicleBodyHealth(veh) or 0)/10)
-    local tankHealth   = math.floor((GetVehiclePetrolTankHealth(veh) or 0)/10)
-    local damage = (Entity(veh).state.partDamage or {})
+    if not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found', 'error'); return end
+
+    local engineHealth = math.floor((GetVehicleEngineHealth(veh) or 0) / 10)
+    local bodyHealth   = math.floor((GetVehicleBodyHealth(veh) or 0) / 10)
+    local tankHealth   = math.floor((GetVehiclePetrolTankHealth(veh) or 0) / 10)
+
+    -- NEW: read mileage and format
+    local function formatMiles(mi)
+        mi = tonumber(mi) or 0
+        local s = string.format('%.1f', mi)
+        local int, dec = s:match('^(%d+)%.(%d+)$')
+        int = int:reverse():gsub('(%d%d%d)', '%1,'):reverse():gsub('^,','')
+        return int .. '.' .. dec
+    end
+    local st = Entity(veh).state
+    local mileageMi = formatMiles(st and st.mileage or 0)
+
+    local state = Entity(veh).state
+    local damage = state.partDamage or {}
+
+    -- REORDER: show plate and mileage in the same box
+    local plate = GetVehicleNumberPlateText(veh) or 'Unknown'
     local menu = {
-        { header='Vehicle Diagnostics', txt=GetVehicleNumberPlateText(veh) or 'Unknown', isMenuHeader=true },
+        { header='Vehicle Diagnostics', txt=('%s • Mileage: %s mi'):format(plate, mileageMi), isMenuHeader=true },
         { header='Overall Condition', txt=('Engine %d%% • Body %d%% • Tank %d%%'):format(engineHealth, bodyHealth, tankHealth), isMenuHeader=true },
     }
     local function calcHealth(d) return math.max(0, 100 - (tonumber(d) or 0)) end

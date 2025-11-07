@@ -7,6 +7,7 @@ ALTER TABLE `player_vehicles`
 CREATE TABLE IF NOT EXISTS `vehicle_diagnostics` (
   `plate` varchar(50) NOT NULL,
   `citizenid` varchar(50) DEFAULT NULL,
+
   `alternator` float DEFAULT 0,
   `sparkplugs` float DEFAULT 0,
   `carbattery` float DEFAULT 0,
@@ -22,15 +23,18 @@ CREATE TABLE IF NOT EXISTS `vehicle_diagnostics` (
   `transmissionfluid` float DEFAULT 0,
   `brakefluid` float DEFAULT 0,
   `coolant` float DEFAULT 0,
+
   `engine_part` float DEFAULT 0,
   `body_part` float DEFAULT 0,
-  `mileage` int DEFAULT 0,
+
+  `mileage` double DEFAULT 0,
   `engineHealth` float DEFAULT 1000,
   `bodyHealth` float DEFAULT 1000,
   `tankHealth` float DEFAULT 1000,
   `dirtLevel` float DEFAULT 0,
+
   PRIMARY KEY (`plate`),
-  KEY `citizenid` (`citizenid`)
+  KEY `citizenid_idx` (`citizenid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS pf_parts_catalog (
