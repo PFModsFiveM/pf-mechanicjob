@@ -3,45 +3,81 @@ local QBCore = exports['qb-core']:GetCoreObject()
 -- Track vehicles spawned from garage
 local garageSpawnedVehicles = {}
 
--- Hook into qb-garages vehicle spawn
-RegisterNetEvent('QBCore:Client:OnVehicleSpawn', function(veh)
-    if not veh or not DoesEntityExist(veh) then return end
-    
-    Wait(500)
-    
-    local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
-    
-    -- Request saved state from database
-    QBCore.Functions.TriggerCallback('pf_mech:loadVehicleState', function(data)
-        if not data then return end
+-- Helper: Which garage system is active?
+local function getGarageSystem()
+    return (Config and Config.GarageSystem) or 'qb-garages'
+end
+
+-- Register vehicle spawn event for both garage systems
+if getGarageSystem() == 'qb-garages' then
+    RegisterNetEvent('QBCore:Client:OnVehicleSpawn', function(veh)
+        if not veh or not DoesEntityExist(veh) then return end
         
-        -- Apply FULL partDamage first
-        if data.partDamage then
-            local state = Entity(veh).state
-            state:set('partDamage', data.partDamage, true)
+        Wait(500)
+        
+        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+        
+        -- Request saved state from database
+        QBCore.Functions.TriggerCallback('pf_mech:loadVehicleState', function(data)
+            if not data then return end
             
-            if Config.Debug then
-                print(string.format('[GARAGE SYNC] Restored %s: oil=%.1f%%, brakes=%.1f%%', plate, 
-                    tonumber(data.partDamage.oil) or 0, 
-                    tonumber(data.partDamage.brakes) or 0))
+            -- Apply FULL partDamage first
+            if data.partDamage then
+                local state = Entity(veh).state
+                state:set('partDamage', data.partDamage, true)
+                
+                if Config.Debug then
+                    print(string.format('[GARAGE SYNC] Restored %s: oil=%.1f%%, brakes=%.1f%%', plate, 
+                        tonumber(data.partDamage.oil) or 0, 
+                        tonumber(data.partDamage.brakes) or 0))
+                end
             end
-        end
+            
+            -- Apply mileage
+            if data.mileage then
+                local state = Entity(veh).state
+                state:set('mileage', tonumber(data.mileage) or 0, true)
+            end
+            
+            -- Apply health values
+            if data.engineHealth then SetVehicleEngineHealth(veh, tonumber(data.engineHealth)) end
+            if data.bodyHealth then SetVehicleBodyHealth(veh, tonumber(data.bodyHealth)) end
+            if data.tankHealth then SetVehiclePetrolTankHealth(veh, tonumber(data.tankHealth)) end
+            if data.dirtLevel then SetVehicleDirtLevel(veh, tonumber(data.dirtLevel)) end
+        end, plate)
         
-        -- Apply mileage
-        if data.mileage then
-            local state = Entity(veh).state
-            state:set('mileage', tonumber(data.mileage) or 0, true)
-        end
-        
-        -- Apply health values
-        if data.engineHealth then SetVehicleEngineHealth(veh, tonumber(data.engineHealth)) end
-        if data.bodyHealth then SetVehicleBodyHealth(veh, tonumber(data.bodyHealth)) end
-        if data.tankHealth then SetVehiclePetrolTankHealth(veh, tonumber(data.tankHealth)) end
-        if data.dirtLevel then SetVehicleDirtLevel(veh, tonumber(data.dirtLevel)) end
-    end, plate)
-    
-    garageSpawnedVehicles[plate] = veh
-end)
+        garageSpawnedVehicles[plate] = veh
+    end)
+elseif getGarageSystem() == 'cd_garages' then
+    -- cd_garages: vehicle spawn event
+    RegisterNetEvent('cd_garages:client:vehicleSpawned', function(veh, plate)
+        if not veh or not DoesEntityExist(veh) then return end
+        Wait(500)
+        plate = (plate or GetVehicleNumberPlateText(veh) or ''):gsub('%s+', ''):upper()
+        -- Request saved state from database
+        QBCore.Functions.TriggerCallback('pf_mech:loadVehicleState', function(data)
+            if not data then return end
+            if data.partDamage then
+                local state = Entity(veh).state
+                state:set('partDamage', data.partDamage, true)
+                if Config.Debug then
+                    print(string.format('[GARAGE SYNC][CD] Restored %s: oil=%.1f%%, brakes=%.1f%%', plate, 
+                        tonumber(data.partDamage.oil) or 0, 
+                        tonumber(data.partDamage.brakes) or 0))
+                end
+            end
+            if data.mileage then
+                local state = Entity(veh).state
+                state:set('mileage', tonumber(data.mileage) or 0, true)
+            end
+            if data.engineHealth then SetVehicleEngineHealth(veh, tonumber(data.engineHealth)) end
+            if data.bodyHealth then SetVehicleBodyHealth(veh, tonumber(data.bodyHealth)) end
+            if data.tankHealth then SetVehiclePetrolTankHealth(veh, tonumber(data.tankHealth)) end
+            if data.dirtLevel then SetVehicleDirtLevel(veh, tonumber(data.dirtLevel)) end
+        end, plate)
+        garageSpawnedVehicles[plate] = veh
+    end)
+end
 
 -- Helper: Build payload from vehicle
 local function buildPayloadFromVehicle(veh)
@@ -120,11 +156,20 @@ CreateThread(function()
                     props.mileage = tonumber(state.mileage) or 0
                     
                     -- Tell server to cache this full state
-                    TriggerServerEvent('pf_mech:sync:cacheVehicleState', {
-                        plate = plate,
-                        netId = NetworkGetNetworkIdFromEntity(veh),
-                        props = props  -- Send entire props object
-                    })
+                    if getGarageSystem() == 'qb-garages' then
+                        TriggerServerEvent('pf_mech:sync:cacheVehicleState', {
+                            plate = plate,
+                            netId = NetworkGetNetworkIdFromEntity(veh),
+                            props = props  -- Send entire props object
+                        })
+                    elseif getGarageSystem() == 'cd_garages' then
+                        -- cd_garages: use their export/event for state sync if needed
+                        TriggerServerEvent('pf_mech:sync:cacheVehicleState', {
+                            plate = plate,
+                            netId = NetworkGetNetworkIdFromEntity(veh),
+                            props = props  -- Send entire props object
+                        })
+                    end
                     
                     if Config.Debug then
                         print(string.format('[GARAGE SYNC] Synced full state: %s (oil: %.1f%%)', 

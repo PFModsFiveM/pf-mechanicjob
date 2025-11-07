@@ -2,9 +2,9 @@ fx_version 'cerulean'
 game 'gta5'
 
 name 'pf-mechanicjob'
-author 'pf'
-description 'Mechanic job with NPC jobs, POS, and management'
-version '1.0.1'
+author 'PF Mods'
+description 'Advanced Mechanic job'
+version '1.0.0'
 
 lua54 'yes'
 
@@ -41,6 +41,9 @@ server_scripts {
   'server/consumables.lua',
   'server/garage_sync.lua'  -- NEW
 }
+
+escrow_ignore 'config.lua'
+
 
 dependencies {
     'qb-core',

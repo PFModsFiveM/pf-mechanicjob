@@ -1,9 +1,18 @@
 Config = Config or {}
 
 -- ============================================================================
--- DEBUG & PERMISSIONS
+-- DEBUG (ALWAYS ON TOP)
 -- ============================================================================
 Config.Debug = true -- Set to true to see all debug notifications and console logs
+
+-- ============================================================================
+-- GARAGE SYSTEM COMPATIBILITY & GENERAL SETTINGS
+-- ============================================================================
+-- Supported values:
+--   'qb-garages'  = QBCore's default garage system (default)
+--   'cd_garages'  = Codesign's cd_garages (https://docs.codesign.pro/paid-scripts/garage)
+-- Add more supported garage scripts here as needed.
+Config.GarageSystem = 'qb-garages' -- or 'cd_garages'
 
 -- Jobs allowed to use mechanic items (in addition to 'mechanic')
 Config.AllowedJobs = {

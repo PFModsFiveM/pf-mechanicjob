@@ -1,3 +1,6 @@
+-- This file is compatible with both qb-garages and cd_garages (codesign).
+-- It listens for vehicle state sync events from the client, regardless of garage system.
+
 local QBCore = exports['qb-core']:GetCoreObject()
 
 -- In-memory cache: [plate] = { props (full vehicle properties), lastUpdate }
