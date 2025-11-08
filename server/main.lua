@@ -958,3 +958,12 @@ RegisterNetEvent('pf_mech:weld:stop', function(netId)
     TriggerClientEvent('pf_mech:weld:stop', -1, netId)
 end)
 
+-- NEW: Check if player has toolbox in inventory
+QBCore.Functions.CreateCallback('pf_mech:hasToolbox', function(source, cb)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then cb(false); return end
+    
+    local item = Player.Functions.GetItemByName('toolbox')
+    cb(item ~= nil)
+end)
+

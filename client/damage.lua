@@ -1393,7 +1393,17 @@ if Config.Debug then
     end, false)
 end -- END DEBUG COMMANDS
 
--- Item use handlers (fixed, minimal and reliable)
+-- Helper: Check if player has toolbox (moved from main.lua if needed, or reference main.lua version)
+local function hasToolbox(callback)
+    QBCore.Functions.TriggerCallback('pf_mech:hasToolbox', function(has)
+        if not has then
+            QBCore.Functions.Notify('You need a toolbox to do mechanic work!', 'error')
+        end
+        callback(has)
+    end)
+end
+
+-- Item use handlers (fixed, minimal and reliable) - ADD TOOLBOX CHECK
 RegisterNetEvent('pf-mechanicjob:client:use:alternator', function()
     local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
     if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
@@ -1401,13 +1411,18 @@ RegisterNetEvent('pf-mechanicjob:client:use:alternator', function()
     local damage = getVehicleDamage(veh) or {}
     if (tonumber(damage.alternator) or 0) <= 0 then return QBCore.Functions.Notify('Alternator already OK', 'success') end
 
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-        if not ok then return QBCore.Functions.Notify('Missing alternator', 'error') end
-        doMechanicAction('Replacing alternator', 4000)
-        damage.alternator = 0
-        SafeStateSet(veh, 'partDamage', damage)
-        QBCore.Functions.Notify('Alternator replaced', 'success')
-    end, 'alternator')
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+
+        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+            if not ok then return QBCore.Functions.Notify('Missing alternator', 'error') end
+            doMechanicAction('Replacing alternator', 4000)
+            damage.alternator = 0
+            SafeStateSet(veh, 'partDamage', damage)
+            QBCore.Functions.Notify('Alternator replaced', 'success')
+        end, 'alternator')
+    end)
 end)
 
 RegisterNetEvent('pf-mechanicjob:client:use:engine_oil', function()
@@ -1417,13 +1432,18 @@ RegisterNetEvent('pf-mechanicjob:client:use:engine_oil', function()
     local damage = getVehicleDamage(veh) or {}
     if (tonumber(damage.oil) or 0) <= 0 then return QBCore.Functions.Notify('Engine oil already fresh', 'success') end
 
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-        if not ok then return QBCore.Functions.Notify('Missing engine oil', 'error') end
-        doMechanicAction('Changing engine oil', 5000)
-        damage.oil = 0
-        SafeStateSet(veh, 'partDamage', damage)
-        QBCore.Functions.Notify('Engine oil changed', 'success')
-    end, 'engine_oil')
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+
+        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+            if not ok then return QBCore.Functions.Notify('Missing engine oil', 'error') end
+            doMechanicAction('Changing engine oil', 5000)
+            damage.oil = 0
+            SafeStateSet(veh, 'partDamage', damage)
+            QBCore.Functions.Notify('Engine oil changed', 'success')
+        end, 'engine_oil')
+    end)
 end)
 
 RegisterNetEvent('pf-mechanicjob:client:use:oil_filter', function()
@@ -1433,16 +1453,20 @@ RegisterNetEvent('pf-mechanicjob:client:use:oil_filter', function()
     local damage = getVehicleDamage(veh) or {}
     if (tonumber(damage.oil_filter) or 0) <= 0 then return QBCore.Functions.Notify('Oil filter already clean', 'success') end
 
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-        if not ok then return QBCore.Functions.Notify('Missing oil filter', 'error') end
-        doMechanicAction('Replacing oil filter', 3500)
-        damage.oil_filter = 0
-        SafeStateSet(veh, 'partDamage', damage)
-        QBCore.Functions.Notify('Oil filter replaced', 'success')
-    end, 'oil_filter')
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+
+        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+            if not ok then return QBCore.Functions.Notify('Missing oil filter', 'error') end
+            doMechanicAction('Replacing oil filter', 3500)
+            damage.oil_filter = 0
+            SafeStateSet(veh, 'partDamage', damage)
+            QBCore.Functions.Notify('Oil filter replaced', 'success')
+        end, 'oil_filter')
+    end)
 end)
 
--- fuel_injector (NEW)
 RegisterNetEvent('pf-mechanicjob:client:use:fuel_injector', function()
     local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
     if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
@@ -1450,17 +1474,20 @@ RegisterNetEvent('pf-mechanicjob:client:use:fuel_injector', function()
     local damage = getVehicleDamage(veh) or {}
     if (tonumber(damage.fuel_injector) or 0) <= 0 then return QBCore.Functions.Notify('Fuel injector already OK', 'success') end
 
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-        if not ok then return QBCore.Functions.Notify('Missing fuel injector', 'error') end
-        doMechanicAction('Replacing fuel injector', 4500)
-        -- Each injector repairs 25% (max 4 items = 100%)
-        damage.fuel_injector = math.max(0, (tonumber(damage.fuel_injector) or 0) - 25)
-        SafeStateSet(veh, 'partDamage', damage)
-        QBCore.Functions.Notify('Fuel injector replaced', 'success')
-    end, 'fuel_injector')
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+
+        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+            if not ok then return QBCore.Functions.Notify('Missing fuel injector', 'error') end
+            doMechanicAction('Replacing fuel injector', 4500)
+            damage.fuel_injector = math.max(0, (tonumber(damage.fuel_injector) or 0) - 25)
+            SafeStateSet(veh, 'partDamage', damage)
+            QBCore.Functions.Notify('Fuel injector replaced', 'success')
+        end, 'fuel_injector')
+    end)
 end)
 
--- powersteeringpump (NEW)
 RegisterNetEvent('pf-mechanicjob:client:use:powersteeringpump', function()
     local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
     if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
@@ -1468,16 +1495,20 @@ RegisterNetEvent('pf-mechanicjob:client:use:powersteeringpump', function()
     local damage = getVehicleDamage(veh) or {}
     if (tonumber(damage.powersteeringpump) or 0) <= 0 then return QBCore.Functions.Notify('Power steering pump already OK', 'success') end
 
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-        if not ok then return QBCore.Functions.Notify('Missing power steering pump', 'error') end
-        doMechanicAction('Replacing power steering pump', 5000)
-        damage.powersteeringpump = 0
-        SafeStateSet(veh, 'partDamage', damage)
-        QBCore.Functions.Notify('Power steering pump replaced', 'success')
-    end, 'powersteeringpump')
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+
+        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+            if not ok then return QBCore.Functions.Notify('Missing power steering pump', 'error') end
+            doMechanicAction('Replacing power steering pump', 5000)
+            damage.powersteeringpump = 0
+            SafeStateSet(veh, 'partDamage', damage)
+            QBCore.Functions.Notify('Power steering pump replaced', 'success')
+        end, 'powersteeringpump')
+    end)
 end)
 
--- radiator (NEW)
 RegisterNetEvent('pf-mechanicjob:client:use:radiator', function()
     local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
     if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
@@ -1485,13 +1516,18 @@ RegisterNetEvent('pf-mechanicjob:client:use:radiator', function()
     local damage = getVehicleDamage(veh) or {}
     if (tonumber(damage.radiator) or 0) <= 0 then return QBCore.Functions.Notify('Radiator already OK', 'success') end
 
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-        if not ok then return QBCore.Functions.Notify('Missing radiator', 'error') end
-        doMechanicAction('Replacing radiator', 6000)
-        damage.radiator = 0
-        SafeStateSet(veh, 'partDamage', damage)
-        QBCore.Functions.Notify('Radiator replaced', 'success')
-    end, 'radiator')
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+
+        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+            if not ok then return QBCore.Functions.Notify('Missing radiator', 'error') end
+            doMechanicAction('Replacing radiator', 6000)
+            damage.radiator = 0
+            SafeStateSet(veh, 'partDamage', damage)
+            QBCore.Functions.Notify('Radiator replaced', 'success')
+        end, 'radiator')
+    end)
 end)
 
 -- power_steering_fluid (ALREADY EXISTS - keep as is)

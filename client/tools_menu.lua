@@ -438,48 +438,58 @@ local function OpenMenuGeneric(menu)
     end
 end
 
--- FIX: inspection progressbar handler (open/close doors + welder prop)
+-- FIX: inspection progressbar handler (open/close doors + welder prop) - ADD TOOLBOX CHECK
 RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
     local veh = getRepairVehicle()
     if not veh then QBCore.Functions.Notify('No vehicle nearby','error'); return end
-    local ped = PlayerPedId()
+    
+    -- NEW: Check for toolbox before inspection
+    hasToolbox(function(has)
+        if not has then return end
 
-    local weldDict, weldAnim = "amb@world_human_welding@male@base", "base"
-    RequestAnimDict(weldDict) while not HasAnimDictLoaded(weldDict) do Wait(0) end
+        local ped = PlayerPedId()
 
-    OpenAllDoors(veh)
+        local weldDict, weldAnim = "amb@world_human_welding@male@base", "base"
+        RequestAnimDict(weldDict) while not HasAnimDictLoaded(weldDict) do Wait(0) end
 
-    -- Play welding anim + start synced welder prop
-    TaskPlayAnim(ped, weldDict, weldAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
-    StartWeld(ped)
+        OpenAllDoors(veh)
 
-    if not QBCore.Functions.Progressbar then
-        Wait(3000)
-        ClearPedTasks(ped)
-        StopWeld()
-        CloseAllDoors(veh)
-        QBCore.Functions.Notify('Progressbar not available','error')
-        return
-    end
+        TaskPlayAnim(ped, weldDict, weldAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
+        StartWeld(ped)
 
-    QBCore.Functions.Progressbar('inspect_vehicle','Inspecting vehicle...',10000,false,true,
-        { disableMovement=true, disableCarMovement=true, disableMouse=false, disableCombat=true },
-        { animDict=weldDict, anim=weldAnim, flags=49 }, {}, {},
-        function()
-            -- COMPLETE
+        if not QBCore.Functions.Progressbar then
+            Wait(3000)
             ClearPedTasks(ped)
             StopWeld()
             CloseAllDoors(veh)
-            TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
-        end,
-        function()
-            -- CANCEL
-            ClearPedTasks(ped)
-            StopWeld()
-            CloseAllDoors(veh)
-            QBCore.Functions.Notify('Inspection cancelled','error')
+            QBCore.Functions.Notify('Progressbar not available','error')
+            return
         end
-    )
+
+        QBCore.Functions.Progressbar('inspect_vehicle','Inspecting vehicle...',10000,false,true,
+            { disableMovement=true, disableCarMovement=true, disableMouse=false, disableCombat=true },
+            { animDict=weldDict, anim=weldAnim, flags=49 }, {}, {},
+            function()
+                ClearPedTasks(ped)
+                StopWeld()
+                CloseAllDoors(veh)
+                local clipDict, clipAnim, clipProp = "missheistdockssetup1clipboard@base", "base", `prop_notepad_01`
+                RequestAnimDict(clipDict) while not HasAnimDictLoaded(clipDict) do Wait(0) end
+                RequestModel(clipProp) while not HasModelLoaded(clipProp) do Wait(0) end
+                currentClipboard = CreateObject(clipProp, 0,0,0,true,true,false)
+                AttachEntityToEntity(currentClipboard, ped, GetPedBoneIndex(ped,18905), 0.1,0.02,0.05, -50.0,90.0,0.0, true,true,false,true,1,true)
+                TaskPlayAnim(ped, clipDict, clipAnim, 8.0, -8.0, -1, 50, 0, false, false, false)
+                TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
+            end,
+            function()
+                ClearPedTasks(ped)
+                StopWeld()
+                CloseAllDoors(veh)
+                if currentClipboard then DeleteEntity(currentClipboard) currentClipboard=nil end
+                QBCore.Functions.Notify('Inspection cancelled','error')
+            end
+        )
+    end)
 end)
 
 -- REPLACE: diagnostics menu build (fill placeholders)
@@ -587,8 +597,95 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
     OpenMenuGeneric(menu)
 end)
 
--- FIX: repairPart handler stays unchanged or handled elsewhere
--- ...existing code...
+-- Wheel repair (burst or detached) - ADD TOOLBOX CHECK
+RegisterNetEvent('pf-mechanicjob:client:repairTireWheel', function(data)
+    local veh   = data and data.vehicle or getRepairVehicle()
+    local wheel = data and tonumber(data.wheel or -1) or -1
+    if not veh or veh == 0 or not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found','error'); return end
+
+    local valid=false
+    for _,idx in ipairs(GetWheelIndices(veh)) do if idx == wheel then valid=true break end end
+    if not valid then QBCore.Functions.Notify('Invalid wheel index','error'); return end
+
+    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot get control','error'); return end
+    if not IsWheelDamaged(veh, wheel) then
+        QBCore.Functions.Notify('Wheel not damaged','error')
+        return
+    end
+
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+
+        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+            if not ok then QBCore.Functions.Notify('Missing tire','error'); return end
+
+            doMechanicAction('Replacing tire...', 4000)
+
+            SetVehicleTyreFixed(veh, wheel)
+            Wait(120)
+
+            if IsWheelDamaged(veh, wheel) then
+                Wait(150)
+            end
+
+            if IsWheelDamaged(veh, wheel) then
+                Wait(200)
+            end
+
+            if IsWheelDamaged(veh, wheel) then
+                return
+            end
+
+            local st = Entity(veh).state
+            local pd = st.partDamage or {}
+            pd.tires = pd.tires or {}
+            local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[wheel] or tostring(wheel)
+            pd.tires[key] = 0
+            st:set('partDamage', pd, true)
+
+            QBCore.Functions.Notify('Tire replaced', 'success')
+        end, 'tire_new')
+    end)
+end)
+
+-- New handler: perform progress then call server to consume items & apply repair
+RegisterNetEvent('pf-mechanicjob:client:doRepairWithItems', function(data)
+    local vehicle = data.vehicle
+    local part = data.part
+    local needed = tonumber(data.needed) or 1
+    local wheel = data.wheel
+    local progTime = tonumber(data.progTime) or timeForAction('engine')
+
+    if not DoesEntityExist(vehicle) then
+        QBCore.Functions.Notify('Vehicle not found', 'error'); return
+    end
+
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+
+        -- NEW: Get item label from DiagnosticLabels or QBCore.Shared.Items
+        local partLabel = DiagnosticLabels[part] or part:gsub('_', ' ')
+        if QBCore.Shared.Items[part] and QBCore.Shared.Items[part].label then
+            partLabel = QBCore.Shared.Items[part].label
+        end
+
+        -- run progress; if cancelled, abort
+        if not DoProgress('Repairing '..partLabel..'...', progTime, 'mini@repair', 'fixing_a_ped') then
+            QBCore.Functions.Notify('Repair cancelled', 'error'); return
+        end
+
+        -- ask server to remove items and perform repair
+        QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
+            if success then
+                QBCore.Functions.Notify(msg or 'Repair successful', 'success')
+            else
+                QBCore.Functions.Notify(msg or 'Missing required parts or failed', 'error')
+            end
+        end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, wheel)
+    end)
+end)
 
 -- REMOVE duplicated welding helpers previously at bottom; they are now hoisted above.
 -- ...existing code...

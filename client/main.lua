@@ -8,6 +8,16 @@ local function isPlayerMechanic()
     return Config.IsMechanicJob(PlayerData.job.name)
 end
 
+-- Helper: Check if player has toolbox (required for all work)
+local function hasToolbox(callback)
+    QBCore.Functions.TriggerCallback('pf_mech:hasToolbox', function(has)
+        if not has then
+            QBCore.Functions.Notify('You need a toolbox to do mechanic work!', 'error')
+        end
+        callback(has)
+    end)
+end
+
 local JOB = Config.JobName or 'mechanic'
 
 local UI_OPEN = false
@@ -572,18 +582,23 @@ RegisterNetEvent('pf_mech:confirmModApply', function(args)
         return 
     end
 
-    -- Start installation
-    if not DoProgress('Installing part...', timeForAction('setMod'), 'amb@world_human_vehicle_mechanic@male@base', 'base') then 
-        return 
-    end
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
 
-    -- Send to server for item removal and authoritative sync
-    TriggerServerEvent('pf_mech:server:applyMod', {
-        vehicle = args.vehicle,
-        item = args.item,
-        modType = args.modType,
-        modIndex = args.modIndex
-    })
+        -- Start installation
+        if not DoProgress('Installing part...', timeForAction('setMod'), 'amb@world_human_vehicle_mechanic@male@base', 'base') then 
+            return 
+        end
+
+        -- Send to server for item removal and authoritative sync
+        TriggerServerEvent('pf_mech:server:applyMod', {
+            vehicle = args.vehicle,
+            item = args.item,
+            modType = args.modType,
+            modIndex = args.modIndex
+        })
+    end)
 end)
 
 -- Add new handler for server confirmation
@@ -630,15 +645,26 @@ RegisterNetEvent('pf_mech:tryUsePart', function(itemName)
     local veh = nearbyVeh(6.0)
     if veh == 0 then return TriggerEvent('QBCore:Notify', 'No vehicle nearby', 'error') end
 
-    -- Get installation time based on part complexity
-    local installTime = installTimes[itemName] or 5000
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
 
-    if not DoProgress('Installing '..itemName:gsub('_', ' ')..'...', installTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then 
-        return TriggerEvent('QBCore:Notify', 'Installation cancelled', 'error')
-    end
+        -- Get installation time based on part complexity
+        local installTime = installTimes[itemName] or 5000
 
-    local px, py, pz = table.unpack(GetEntityCoords(PlayerPedId()))
-    TriggerServerEvent('pf_mech:usePart', itemName, NetworkGetNetworkIdFromEntity(veh), nil, px, py, pz, nil)
+        -- NEW: Get item label from QBCore.Shared.Items
+        local itemLabel = itemName:gsub('_', ' ')
+        if QBCore.Shared.Items[itemName] and QBCore.Shared.Items[itemName].label then
+            itemLabel = QBCore.Shared.Items[itemName].label
+        end
+
+        if not DoProgress('Installing '..itemLabel..'...', installTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then 
+            return TriggerEvent('QBCore:Notify', 'Installation cancelled', 'error')
+        end
+
+        local px, py, pz = table.unpack(GetEntityCoords(PlayerPedId()))
+        TriggerServerEvent('pf_mech:usePart', itemName, NetworkGetNetworkIdFromEntity(veh), nil, px, py, pz, nil)
+    end)
 end)
 
 -- apply the effect; progress already completed
@@ -800,20 +826,24 @@ RegisterNetEvent('pf-mechanicjob:client:doRepairWithItems', function(data)
         QBCore.Functions.Notify('Vehicle not found', 'error'); return
     end
 
-    -- run progress; if cancelled, abort
-    if not DoProgress('Repairing '..(part:gsub('_',' '))..'...', progTime, 'mini@repair', 'fixing_a_ped') then
-        QBCore.Functions.Notify('Repair cancelled', 'error'); return
-    end
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
 
-    -- ask server to remove items and perform repair
-    QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
-        if success then
-            QBCore.Functions.Notify(msg or 'Repair successful', 'success')
-            -- server will trigger pf_mech:applyPart to update the vehicle; nothing else required here
-        else
-            QBCore.Functions.Notify(msg or 'Missing required parts or failed', 'error')
+        -- run progress; if cancelled, abort
+        if not DoProgress('Repairing '..(part:gsub('_',' '))..'...', progTime, 'mini@repair', 'fixing_a_ped') then
+            QBCore.Functions.Notify('Repair cancelled', 'error'); return
         end
-    end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, wheel)
+
+        -- ask server to remove items and perform repair
+        QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
+            if success then
+                QBCore.Functions.Notify(msg or 'Repair successful', 'success')
+            else
+                QBCore.Functions.Notify(msg or 'Missing required parts or failed', 'error')
+            end
+        end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, wheel)
+    end)
 end)
 
 -- Fix the QBCore:Client:UseItem handler - restore proper routing
@@ -876,13 +906,19 @@ end
 RegisterNetEvent('pf_mech:applyTint', function(args)
     local veh = NetworkGetEntityFromNetworkId(args.vehicle or 0)
     if not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found', 'error'); return end
-    if GetIsVehicleEngineRunning(veh) then QBCore.Functions.Notify('Turn engine off first', 'error') end
-    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-        if not ok then QBCore.Functions.Notify('Missing tint supplies', 'error'); return end
-        if not DoProgress('Applying window tint...', timeForAction('paint'), 'amb@world_human_vehicle_mechanic@male@base', 'base') then return end
-        SetVehicleWindowTint(veh, tonumber(args.tint) or 0)
-        QBCore.Functions.Notify('Window tint applied', 'success')
-    end, 'tint_supplies') -- changed
+    if GetIsVehicleEngineRunning(veh) then QBCore.Functions.Notify('Turn engine off first', 'error'); return end
+    
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+
+        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+            if not ok then QBCore.Functions.Notify('Missing tint supplies', 'error'); return end
+            if not DoProgress('Applying window tint...', timeForAction('paint'), 'amb@world_human_vehicle_mechanic@male@base', 'base') then return end
+            SetVehicleWindowTint(veh, tonumber(args.tint) or 0)
+            QBCore.Functions.Notify('Window tint applied', 'success')
+        end, 'tint_supplies')
+    end)
 end)
 
 -- Override cosmetic use handler to enforce zones and support tint
