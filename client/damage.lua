@@ -913,9 +913,18 @@ local function applyDamageEffects(veh, damage)
         if math.random(100) < (coolantDmg - 80) then
             SetVehicleEngineTemperature(veh, 150.0)
             QBCore.Functions.Notify('⚠️ Coolant low! Overheating!', 'error', 3000)
-            -- Steam effect
-            UseParticleFxAssetNextCall("core")
-            StartParticleFxNonLoopedOnEntity("exp_grd_petrol_pump", veh, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 1.0, false, false, false)
+            -- Steam effect (SYNCED)
+            pcall(function()
+                TriggerServerEvent('pf_mech:vfx:oneshot', {
+                    dict='core',
+                    name='exp_grd_petrol_pump',
+                    type='entity',
+                    netId=NetworkGetNetworkIdFromEntity(veh),
+                    pos={0.0, 2.0, 1.0},
+                    rot={0.0, 0.0, 0.0},
+                    scale=1.0
+                })
+            end)
             if coolantDmg >= 100 and math.random(100) < 20 then
                 -- Fire!
                 StartEntityFire(veh)
@@ -1504,6 +1513,18 @@ RegisterNetEvent('pf-mechanicjob:client:useRepairItem', function(itemName)
             end
         end
         if not hasBurstTire then return QBCore.Functions.Notify('Tires already OK', 'success') end
+    elseif damageKey == 'brakes' then
+        -- Check if any brake pad is worn
+        local brakeDmg = tonumber(damage.brakes) or 0
+        if brakeDmg <= 0 then return QBCore.Functions.Notify('Brake pads already OK', 'success') end
+    elseif damageKey == 'suspension' then
+        -- Check if suspension is damaged
+        local suspDmg = tonumber(damage.suspension) or 0
+        if suspDmg <= 0 then return QBCore.Functions.Notify('Suspension already OK', 'success') end
+    elseif damageKey == 'axle' then
+        -- Check if axle is damaged
+        local axleDmg = tonumber(damage.axle) or 0
+        if axleDmg <= 0 then return QBCore.Functions.Notify('Axle already OK', 'success') end
     else
         if (tonumber(damage[damageKey]) or 0) <= 0 then
             -- Get item label for notification
@@ -1638,6 +1659,8 @@ end)
 RegisterNetEvent('pf-mechanicjob:client:use:oil_filter', function()
     TriggerEvent('pf-mechanicjob:client:useRepairItem', 'oil_filter')
 end)
+
+)
 
 RegisterNetEvent('pf-mechanicjob:client:use:fuel_injector', function()
     TriggerEvent('pf-mechanicjob:client:useRepairItem', 'fuel_injector')

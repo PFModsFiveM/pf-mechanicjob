@@ -24,34 +24,49 @@ local function LoadPtfx(dict)
     RequestNamedPtfxAsset(dict)
     while not HasNamedPtfxAssetLoaded(dict) do Wait(0) end
 end
+local function NetWaitEntityFromNet(netId, tries, waitMs)
+    local ent
+    for i=1,(tries or 40) do
+        ent = NetworkGetEntityFromNetworkId(netId or 0)
+        if ent ~= 0 and DoesEntityExist(ent) then return ent end
+        Wait(waitMs or 25)
+    end
+    return 0
+end
 
 local function StartWeld(ped)
     local model = `prop_weld_torch`
     LoadModel(model)
+
+    -- Create a fully networked prop so other clients receive it
     local prop = CreateObject(model, 0.0, 0.0, 0.0, true, true, true)
-    AttachEntityToEntity(prop, ped, GetPedBoneIndex(ped, 57005), 0.12, 0.02, -0.02, -20.0, 180.0, 10.0, true, true, false, true, 1, true)
     SetEntityAsMissionEntity(prop, true, true)
+    AttachEntityToEntity(prop, ped, GetPedBoneIndex(ped, 57005), 0.12, 0.02, -0.02, -20.0, 180.0, 10.0, true, true, false, true, 1, true)
+
     local netId = NetworkGetNetworkIdFromEntity(prop)
     SetNetworkIdExistsOnAllMachines(netId, true)
-    NetworkSetNetworkIdDynamic(netId, false)
+    SetNetworkIdCanMigrate(netId, true)
 
+    -- Local looped sparks
     LoadPtfx('core'); UseParticleFxAssetNextCall('core')
     local fx = StartParticleFxLoopedOnEntity('ent_sparks', prop, 0.02, 0.02, 0.0, 0.0, 0.0, 0.0, 1.2, false, false, false)
 
     currentWelderProp = prop
     currentWeldFx = fx
 
-    -- broadcast (server relays to all)
+    -- Relay to everyone
     TriggerServerEvent('pf_mech:weld:start', netId)
 end
 
 local function StopWeld()
-    if currentWelderProp and DoesEntityExist(currentWelderProp) then
-        local netId = NetworkGetNetworkIdFromEntity(currentWelderProp)
+    -- Relay first (so remotes stop their fx even if delete lags)
+    local netId = currentWelderProp and NetworkGetNetworkIdFromEntity(currentWelderProp) or 0
+    if netId and netId ~= 0 then
         TriggerServerEvent('pf_mech:weld:stop', netId)
     end
+
     if currentWeldFx then
-        StopParticleFxLooped(currentWeldFx, true)
+        pcall(function() StopParticleFxLooped(currentWeldFx, true) end)
         currentWeldFx = nil
     end
     if currentWelderProp and DoesEntityExist(currentWelderProp) then
@@ -62,15 +77,15 @@ end
 
 -- Sync welding sparks on other clients, if any
 RegisterNetEvent('pf_mech:weld:start', function(netId)
-    local ent = NetworkGetEntityFromNetworkId(netId or 0)
-    if not ent or ent == 0 or not DoesEntityExist(ent) then return end
+    local ent = NetWaitEntityFromNet(netId, 60, 25)
+    if ent == 0 then return end
     LoadPtfx('core'); UseParticleFxAssetNextCall('core')
     remoteWeldFx[netId] = StartParticleFxLoopedOnEntity('ent_sparks', ent, 0.02, 0.02, 0.0, 0.0, 0.0, 0.0, 1.2, false, false, false)
 end)
 RegisterNetEvent('pf_mech:weld:stop', function(netId)
     local fx = remoteWeldFx[netId]
     if fx then
-        StopParticleFxLooped(fx, true)
+        pcall(function() StopParticleFxLooped(fx, true) end)
         remoteWeldFx[netId] = nil
     end
 end)
@@ -683,18 +698,39 @@ RegisterNetEvent('pf-mechanicjob:client:doRepairWithItems', function(data)
     end)
 end)
 
+-- Generic one-shot VFX relay (entity or coord based)
+RegisterNetEvent('pf_mech:vfx:oneshot', function(data)
+    if type(data) ~= 'table' then return end
+    local dict, name = tostring(data.dict or ''), tostring(data.name or '')
+    if dict == '' or name == '' then return end
+
+    RequestNamedPtfxAsset(dict)
+    while not HasNamedPtfxAssetLoaded(dict) do Wait(0) end
+    UseParticleFxAssetNextCall(dict)
+
+    if data.type == 'entity' then
+        local ent = NetWaitEntityFromNet(data.netId or 0, 60, 25)
+        if ent == 0 then return end
+        local p = data.pos or {0,0,0}
+        local r = data.rot or {0,0,0}
+        StartParticleFxNonLoopedOnEntity(
+            name, ent,
+            tonumber(p[1]) or 0.0, tonumber(p[2]) or 0.0, tonumber(p[3]) or 0.0,
+            tonumber(r[1]) or 0.0, tonumber(r[2]) or 0.0, tonumber(r[3]) or 0.0,
+            tonumber(data.scale) or 1.0, false, false, false
+        )
+    else
+        local c = data.coords or {}
+        if not (c.x and c.y and c.z) then return end
+        StartParticleFxNonLoopedAtCoord(name, c.x, c.y, c.z, 0.0, 0.0, 0.0, tonumber(data.scale) or 1.0, false, false, false)
+    end
+end)
+
 -- REMOVE duplicated welding helpers previously at bottom; they are now hoisted above.
 -- ...existing code...
 
 -- Helper: Clean up clipboard when menu closes (also stop welder and mark menu closed)
 RegisterNetEvent('qb-menu:client:closeMenu', function()
-    MENU_OPEN = false
-    if currentClipboard and DoesEntityExist(currentClipboard) then
-        local ped = PlayerPedId()
-        ClearPedTasks(ped)
-        DeleteEntity(currentClipboard)
-        currentClipboard = nil
-    end
     StopWeld()
 end)
 
