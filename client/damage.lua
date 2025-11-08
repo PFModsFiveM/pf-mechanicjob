@@ -734,56 +734,41 @@ CreateThread(function()
         local dmg = getVehicleDamage(veh)
         if not dmg then goto next end
 
-        -- Effective braking: worse of pads vs fluid
         local effBrakeDmg = math.max(tonumber(dmg.brakes) or 0, tonumber(dmg.brakefluid) or 0)
         local brakeHealth = math.max(0, math.min(100, 100 - effBrakeDmg))
 
-        -- At 0% brakes: disable S key only when moving forward, allow when stopped/reversing
         if brakeHealth <= 0 then
             local vel = GetEntityVelocity(veh)
             local fwd = GetEntityForwardVector(veh)
             local fwdSpeed = vel.x*fwd.x + vel.y*fwd.y + vel.z*fwd.z
             local speed = math.sqrt(vel.x*vel.x + vel.y*vel.y + vel.z*vel.z)
             if fwdSpeed > 0.5 and speed > 0.5 then
-                DisableControlAction(0, 72, true) -- Disable brake when moving forward
+                DisableControlAction(0, 72, true)
             end
         end
 
-        -- Apply brake force reduction based on health (linear 1:1 mapping)
         local brakeMultiplier = brakeHealth / 100.0
 
-        -- Initialize or recover base handling so we don't compound multipliers
         if not BrakeHandlingBase[veh] then
             local curBrake = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce') or 0.0
             local curHand  = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce') or 0.0
             local lastMult = BrakeLastMultiplier[veh] or 1.0
-
-            -- Recover true base from last applied multiplier
             local origBrake = (lastMult > 0 and curBrake / lastMult) or curBrake
             local origHand  = (lastMult > 0 and curHand  / lastMult) or curHand
-
-            -- Save originals once
             if not OriginalBrakeHandling[veh] then
                 OriginalBrakeHandling[veh] = { brake = origBrake, hand = origHand }
-                if Config.Debug then
-                    print(string.format('[BRAKE INIT] Saved original: brake=%.4f hand=%.4f', origBrake, origHand))
-                end
             end
-
             BrakeHandlingBase[veh] = { brake = OriginalBrakeHandling[veh].brake, hand = OriginalBrakeHandling[veh].hand }
         end
 
         local base = BrakeHandlingBase[veh]
         if base and base.brake and base.brake > 0 then
-            local targetBrakeForce = base.brake * brakeMultiplier
-            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce', targetBrakeForce)
+            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce', base.brake * brakeMultiplier)
         end
         if base and base.hand and base.hand > 0 then
-            local targetHandBrakeForce = base.hand * brakeMultiplier
-            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce', targetHandBrakeForce)
+            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce', base.hand * brakeMultiplier)
         end
 
-        -- Track last multiplier applied for recovery next ticks
         BrakeLastMultiplier[veh] = brakeMultiplier
 
         -- NEW: If fully healthy (pads and fluid), force-restore to originals immediately
@@ -1660,8 +1645,6 @@ RegisterNetEvent('pf-mechanicjob:client:use:oil_filter', function()
     TriggerEvent('pf-mechanicjob:client:useRepairItem', 'oil_filter')
 end)
 
-)
-
 RegisterNetEvent('pf-mechanicjob:client:use:fuel_injector', function()
     TriggerEvent('pf-mechanicjob:client:useRepairItem', 'fuel_injector')
 end)
@@ -1684,8 +1667,6 @@ end)
 -- ...existing code...
 
 -- coolant (ALREADY EXISTS - keep as is)
--- ...existing code...
-
 exports('GetPartDamageTable', function(veh)
     if not veh or not DoesEntityExist(veh) then return {} end
     local st = Entity(veh).state

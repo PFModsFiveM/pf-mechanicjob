@@ -250,3 +250,24 @@ Config.PartRules = {
 Config.ActionTimes = {
   inspection=10000, setMod=4500, oil=5500, engine=5500, body=5000, brake=6500, susp=8000, tire=7000, paint=9000,
 }
+
+-- ============================================================================
+-- WEAR TRIGGER THRESHOLDS (USED BY damage.lua ADVANCED WEAR)
+-- Added to prevent nil table access and allow easy tuning.
+-- ============================================================================
+if not Config.WearTriggers then
+    Config.WearTriggers = {
+        FrontalBodyDropPct = 3.0,      -- % body health drop (per check) treated as frontal impact
+        OverheatTemp        = 115.0,   -- Temp where mild overheating wear begins
+        SevereOverheatTemp  = 130.0,   -- Temp causing severe engine wear
+        OilStarvationHealth = 25,      -- Oil % (health) below which starvation damage applies
+        CoolantCritical     = 30,      -- Coolant % (health) below which engine takes damage
+        HighRPM             = 0.92,    -- Normalized RPM considered abusive at (mph < 4)
+        BurnoutSpeed        = 15,      -- Max MPH while holding accel+brake to count as burnout
+        WaterDepthAlternator= 0.25,    -- Water depth where alternator & battery start taking damage
+        WaterDepthCritical  = 0.45,    -- Water depth where radiator/coolant heavy damage begins
+        DriftLateralSpeed   = 4.5,     -- Lateral velocity threshold for drift wear
+        JumpMinSpeed        = 25.0,    -- Min MPH while airborne to apply suspension/axle hit
+        HardBrakeMPH        = 55.0,    -- MPH threshold for extra brake wear when braking
+    }
+end
