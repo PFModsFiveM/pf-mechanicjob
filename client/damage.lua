@@ -682,6 +682,38 @@ end
 -- Cache for original handling values to avoid compounding multipliers
 local BrakeHandlingBase = {}      -- [veh] = { brake = number, hand = number }
 local BrakeLastMultiplier = {}    -- [veh] = number
+-- NEW: keep the original unmodified handling so we can fully restore
+local OriginalBrakeHandling = {}  -- [veh] = { brake = number, hand = number }
+
+-- NEW: Function to reset brake cache (call after repairs)
+local function ResetBrakeCache(veh)
+    if not veh or veh == 0 or not DoesEntityExist(veh) then return end
+
+    -- If we never captured originals, approximate them by undoing last multiplier
+    local lastMult = BrakeLastMultiplier[veh] or 1.0
+    local curBrake = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce') or 1.0
+    local curHand  = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce') or 1.0
+    local approxOrig = { brake = (lastMult > 0 and (curBrake / lastMult) or curBrake), hand = (lastMult > 0 and (curHand / lastMult) or curHand) }
+
+    -- Prefer previously saved originals if present
+    local orig = OriginalBrakeHandling[veh] or approxOrig
+
+    -- Restore originals immediately
+    SetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce', orig.brake)
+    SetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce', orig.hand)
+
+    -- Rebuild caches
+    OriginalBrakeHandling[veh] = orig
+    BrakeHandlingBase[veh] = { brake = orig.brake, hand = orig.hand }
+    BrakeLastMultiplier[veh] = 1.0
+
+    if Config.Debug then
+        print(string.format('[BRAKE RESET] Restored base: brake=%.4f hand=%.4f', orig.brake, orig.hand))
+    end
+end
+
+-- Export for other scripts to call
+exports('ResetBrakeCache', ResetBrakeCache)
 
 -- REPLACE the brake force thread completely
 CreateThread(function()
@@ -725,12 +757,20 @@ CreateThread(function()
             local curBrake = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce') or 0.0
             local curHand  = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce') or 0.0
             local lastMult = BrakeLastMultiplier[veh] or 1.0
-            if lastMult > 0.0 then
-                -- Recover true base from last applied multiplier
-                curBrake = curBrake / lastMult
-                curHand  = curHand  / lastMult
+
+            -- Recover true base from last applied multiplier
+            local origBrake = (lastMult > 0 and curBrake / lastMult) or curBrake
+            local origHand  = (lastMult > 0 and curHand  / lastMult) or curHand
+
+            -- Save originals once
+            if not OriginalBrakeHandling[veh] then
+                OriginalBrakeHandling[veh] = { brake = origBrake, hand = origHand }
+                if Config.Debug then
+                    print(string.format('[BRAKE INIT] Saved original: brake=%.4f hand=%.4f', origBrake, origHand))
+                end
             end
-            BrakeHandlingBase[veh] = { brake = curBrake, hand = curHand }
+
+            BrakeHandlingBase[veh] = { brake = OriginalBrakeHandling[veh].brake, hand = OriginalBrakeHandling[veh].hand }
         end
 
         local base = BrakeHandlingBase[veh]
@@ -745,6 +785,17 @@ CreateThread(function()
 
         -- Track last multiplier applied for recovery next ticks
         BrakeLastMultiplier[veh] = brakeMultiplier
+
+        -- NEW: If fully healthy (pads and fluid), force-restore to originals immediately
+        if brakeMultiplier >= 0.999 then
+            local orig = OriginalBrakeHandling[veh]
+            if orig then
+                SetVehicleHandlingFloat(veh, 'CHandlingData', 'fBrakeForce', orig.brake)
+                SetVehicleHandlingFloat(veh, 'CHandlingData', 'fHandBrakeForce', orig.hand)
+                BrakeHandlingBase[veh] = { brake = orig.brake, hand = orig.hand }
+                BrakeLastMultiplier[veh] = 1.0
+            end
+        end
 
         ::next::
     end
@@ -1403,131 +1454,201 @@ local function hasToolbox(callback)
     end)
 end
 
--- Item use handlers (fixed, minimal and reliable) - ADD TOOLBOX CHECK
-RegisterNetEvent('pf-mechanicjob:client:use:alternator', function()
-    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
+-- Generic repair item handler (replaces all individual RegisterNetEvent handlers)
+RegisterNetEvent('pf-mechanicjob:client:useRepairItem', function(itemName)
+    local veh = getRepairVehicle()
+    if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
     if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
 
     local damage = getVehicleDamage(veh) or {}
-    if (tonumber(damage.alternator) or 0) <= 0 then return QBCore.Functions.Notify('Alternator already OK', 'success') end
+    
+    -- Map item to damage key and check if repair is needed
+    local itemToDamageKey = {
+        alternator = 'alternator',
+        engine_oil = 'oil',
+        oil_filter = 'oil_filter',
+        fuel_injector = 'fuel_injector',
+        powersteeringpump = 'powersteeringpump',
+        radiator = 'radiator',
+        power_steering_fluid = 'power_steering_fluid',
+        transmissionfluid = 'transmissionfluid',
+        brakefluid = 'brakefluid',
+        coolant = 'coolant',
+        sparkplugs = 'sparkplugs',
+        carbattery = 'carbattery',
+        brake_pads = 'brakes',
+        susp_arm = 'suspension',
+        axleparts = 'axle',
+        engine_part = 'engine',
+        body_part = 'body',
+        tire_new = 'tires'
+    }
+    
+    local damageKey = itemToDamageKey[itemName]
+    if not damageKey then return QBCore.Functions.Notify('Invalid repair item', 'error') end
+    
+    -- Special handling for engine/body (use health values)
+    if damageKey == 'engine' then
+        local engineHealth = GetVehicleEngineHealth(veh)
+        if engineHealth >= 1000.0 then return QBCore.Functions.Notify('Engine already OK', 'success') end
+    elseif damageKey == 'body' then
+        local bodyHealth = GetVehicleBodyHealth(veh)
+        if bodyHealth >= 1000.0 then return QBCore.Functions.Notify('Body already OK', 'success') end
+    elseif damageKey == 'tires' then
+        -- Check if any tire is burst
+        local hasBurstTire = false
+        for i = 0, 5 do
+            if IsVehicleTyreBurst(veh, i, false) then
+                hasBurstTire = true
+                break
+            end
+        end
+        if not hasBurstTire then return QBCore.Functions.Notify('Tires already OK', 'success') end
+    else
+        if (tonumber(damage[damageKey]) or 0) <= 0 then
+            -- Get item label for notification
+            local itemLabel = itemName:gsub('_', ' '):gsub("(%a)([%w_']*)", function(first, rest)
+                return first:upper()..rest:lower()
+            end)
+            if QBCore.Shared.Items[itemName] and QBCore.Shared.Items[itemName].label then
+                itemLabel = QBCore.Shared.Items[itemName].label
+            end
+            return QBCore.Functions.Notify(itemLabel..' already OK', 'success')
+        end
+    end
 
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
+    -- NEW: Check if toolbox is required for this item
+    local needsToolbox = true
+    if Config.NoToolboxRequired then
+        for _, exemptItem in ipairs(Config.NoToolboxRequired) do
+            if exemptItem == itemName then
+                needsToolbox = false
+                break
+            end
+        end
+    end
+
+    local function doRepair()
+        -- Get item label for progress bar
+        local itemLabel = itemName:gsub('_', ' ')
+        if QBCore.Shared.Items[itemName] and QBCore.Shared.Items[itemName].label then
+            itemLabel = QBCore.Shared.Items[itemName].label
+        end
+        
+        -- Get appropriate time based on item
+        local repairTimes = {
+            alternator = 4000,
+            engine_oil = 5000,
+            oil_filter = 3500,
+            fuel_injector = 4500,
+            powersteeringpump = 5000,
+            radiator = 6000,
+            power_steering_fluid = 3000,
+            transmissionfluid = 4000,
+            brakefluid = 3000,
+            coolant = 3500,
+            sparkplugs = 4000,
+            carbattery = 3500,
+            brake_pads = 4500,
+            susp_arm = 5000,
+            axleparts = 6000,
+            engine_part = 8000,
+            body_part = 7000,
+            tire_new = 4000
+        }
+        
+        local repairTime = repairTimes[itemName] or 4000
 
         QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-            if not ok then return QBCore.Functions.Notify('Missing alternator', 'error') end
-            doMechanicAction('Replacing alternator', 4000)
-            damage.alternator = 0
+            if not ok then return QBCore.Functions.Notify('Missing '..itemLabel, 'error') end
+            
+            doMechanicAction('Replacing '..itemLabel, repairTime)
+            
+            -- Apply repair based on item type
+            if damageKey == 'engine' then
+                SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + 200.0))
+                damage.engine = math.max(0, (damage.engine or 0) - 20)
+            elseif damageKey == 'body' then
+                local newHealth = math.min(1000.0, GetVehicleBodyHealth(veh) + 200.0)
+                SetVehicleBodyHealth(veh, newHealth)
+                if newHealth >= 1000.0 then
+                    SetVehicleDeformationFixed(veh)
+                    SetVehicleFixed(veh)
+                end
+                damage.body = math.max(0, (damage.body or 0) - 20)
+            elseif damageKey == 'tires' then
+                -- Fix one burst tire
+                for i = 0, 5 do
+                    if IsVehicleTyreBurst(veh, i, false) then
+                        SetVehicleTyreFixed(veh, i)
+                        damage.tires = damage.tires or {}
+                        local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[i] or tostring(i)
+                        damage.tires[key] = 0
+                        break
+                    end
+                end
+            elseif damageKey == 'oil' then
+                SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + 150.0))
+                damage.oil = 0
+            elseif damageKey == 'brakes' then
+                -- FIX: per-item brake pad repair based on max_items (default 4)
+                local maxItems = (Config.PartRules.brake_pads and Config.PartRules.brake_pads.max_items) or 4
+                local perItem = 100 / maxItems                       -- each pad restores this % of health
+                local currentDamage = tonumber(damage.brakes) or 0    -- damage scale 0-100
+                local newDamage = math.max(0, currentDamage - perItem)
+                damage.brakes = newDamage
+                ResetBrakeCache(veh)
+            elseif damageKey == 'suspension' then
+                damage.suspension = math.max(0, (damage.suspension or 0) - 50)
+            elseif damageKey == 'axle' then
+                damage.axle = math.max(0, (damage.axle or 0) - 50)
+            elseif damageKey == 'sparkplugs' then
+                SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + 50.0))
+                damage.sparkplugs = math.max(0, (damage.sparkplugs or 0) - 30)
+            else
+                -- For all other parts, set to 0
+                damage[damageKey] = 0
+            end
+            
             SafeStateSet(veh, 'partDamage', damage)
-            QBCore.Functions.Notify('Alternator replaced', 'success')
-        end, 'alternator')
-    end)
+            QBCore.Functions.Notify(itemLabel..' replaced', 'success')
+        end, itemName)
+    end
+
+    -- Check for toolbox if needed
+    if needsToolbox then
+        hasToolbox(function(has)
+            if not has then return end
+            doRepair()
+        end)
+    else
+        doRepair()
+    end
+end)
+
+-- Keep old individual event handlers for backwards compatibility (but they just call the new handler)
+RegisterNetEvent('pf-mechanicjob:client:use:alternator', function()
+    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'alternator')
 end)
 
 RegisterNetEvent('pf-mechanicjob:client:use:engine_oil', function()
-    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
-    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
-
-    local damage = getVehicleDamage(veh) or {}
-    if (tonumber(damage.oil) or 0) <= 0 then return QBCore.Functions.Notify('Engine oil already fresh', 'success') end
-
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-
-        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-            if not ok then return QBCore.Functions.Notify('Missing engine oil', 'error') end
-            doMechanicAction('Changing engine oil', 5000)
-            damage.oil = 0
-            SafeStateSet(veh, 'partDamage', damage)
-            QBCore.Functions.Notify('Engine oil changed', 'success')
-        end, 'engine_oil')
-    end)
+    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'engine_oil')
 end)
 
 RegisterNetEvent('pf-mechanicjob:client:use:oil_filter', function()
-    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
-    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
-
-    local damage = getVehicleDamage(veh) or {}
-    if (tonumber(damage.oil_filter) or 0) <= 0 then return QBCore.Functions.Notify('Oil filter already clean', 'success') end
-
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-
-        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-            if not ok then return QBCore.Functions.Notify('Missing oil filter', 'error') end
-            doMechanicAction('Replacing oil filter', 3500)
-            damage.oil_filter = 0
-            SafeStateSet(veh, 'partDamage', damage)
-            QBCore.Functions.Notify('Oil filter replaced', 'success')
-        end, 'oil_filter')
-    end)
+    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'oil_filter')
 end)
 
 RegisterNetEvent('pf-mechanicjob:client:use:fuel_injector', function()
-    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
-    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
-
-    local damage = getVehicleDamage(veh) or {}
-    if (tonumber(damage.fuel_injector) or 0) <= 0 then return QBCore.Functions.Notify('Fuel injector already OK', 'success') end
-
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-
-        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-            if not ok then return QBCore.Functions.Notify('Missing fuel injector', 'error') end
-            doMechanicAction('Replacing fuel injector', 4500)
-            damage.fuel_injector = math.max(0, (tonumber(damage.fuel_injector) or 0) - 25)
-            SafeStateSet(veh, 'partDamage', damage)
-            QBCore.Functions.Notify('Fuel injector replaced', 'success')
-        end, 'fuel_injector')
-    end)
+    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'fuel_injector')
 end)
 
 RegisterNetEvent('pf-mechanicjob:client:use:powersteeringpump', function()
-    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
-    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
-
-    local damage = getVehicleDamage(veh) or {}
-    if (tonumber(damage.powersteeringpump) or 0) <= 0 then return QBCore.Functions.Notify('Power steering pump already OK', 'success') end
-
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-
-        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-            if not ok then return QBCore.Functions.Notify('Missing power steering pump', 'error') end
-            doMechanicAction('Replacing power steering pump', 5000)
-            damage.powersteeringpump = 0
-            SafeStateSet(veh, 'partDamage', damage)
-            QBCore.Functions.Notify('Power steering pump replaced', 'success')
-        end, 'powersteeringpump')
-    end)
+    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'powersteeringpump')
 end)
 
 RegisterNetEvent('pf-mechanicjob:client:use:radiator', function()
-    local veh = getRepairVehicle(); if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
-    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
-
-    local damage = getVehicleDamage(veh) or {}
-    if (tonumber(damage.radiator) or 0) <= 0 then return QBCore.Functions.Notify('Radiator already OK', 'success') end
-
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-
-        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-            if not ok then return QBCore.Functions.Notify('Missing radiator', 'error') end
-            doMechanicAction('Replacing radiator', 6000)
-            damage.radiator = 0
-            SafeStateSet(veh, 'partDamage', damage)
-            QBCore.Functions.Notify('Radiator replaced', 'success')
-        end, 'radiator')
-    end)
+    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'radiator')
 end)
 
 -- power_steering_fluid (ALREADY EXISTS - keep as is)

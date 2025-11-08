@@ -645,10 +645,18 @@ RegisterNetEvent('pf_mech:tryUsePart', function(itemName)
     local veh = nearbyVeh(6.0)
     if veh == 0 then return TriggerEvent('QBCore:Notify', 'No vehicle nearby', 'error') end
 
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
+    -- NEW: Check if toolbox is required for this item
+    local needsToolbox = true
+    if Config.NoToolboxRequired then
+        for _, exemptItem in ipairs(Config.NoToolboxRequired) do
+            if exemptItem == itemName then
+                needsToolbox = false
+                break
+            end
+        end
+    end
 
+    local function doInstall()
         -- Get installation time based on part complexity
         local installTime = installTimes[itemName] or 5000
 
@@ -664,7 +672,17 @@ RegisterNetEvent('pf_mech:tryUsePart', function(itemName)
 
         local px, py, pz = table.unpack(GetEntityCoords(PlayerPedId()))
         TriggerServerEvent('pf_mech:usePart', itemName, NetworkGetNetworkIdFromEntity(veh), nil, px, py, pz, nil)
-    end)
+    end
+
+    -- Check for toolbox if needed
+    if needsToolbox then
+        hasToolbox(function(has)
+            if not has then return end
+            doInstall()
+        end)
+    else
+        doInstall()
+    end
 end)
 
 -- apply the effect; progress already completed
@@ -716,6 +734,10 @@ RegisterNetEvent('pf_mech:applyPart', function(data)
             
         elseif data.type == 'brakes' then
             partDamage.brakes = math.max(0, (partDamage.brakes or 0) - (25 * qty))
+            -- NEW: Reset brake cache immediately
+            pcall(function()
+                exports['pf-mechanicjob']:ResetBrakeCache(veh)
+            end)
             
         elseif data.type == 'suspension' then
             local cur = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fTractionCurveMax') or 1.0
@@ -738,6 +760,10 @@ RegisterNetEvent('pf_mech:applyPart', function(data)
             partDamage.transmissionfluid = 0
         elseif data.type == 'brakefluid' then
             partDamage.brakefluid = 0
+            -- NEW: Reset brake cache for brake fluid repairs too
+            pcall(function()
+                exports['pf-mechanicjob']:ResetBrakeCache(veh)
+            end)
         elseif data.type == 'coolant' then
             partDamage.coolant = 0
         end

@@ -438,58 +438,54 @@ local function OpenMenuGeneric(menu)
     end
 end
 
--- FIX: inspection progressbar handler (open/close doors + welder prop) - ADD TOOLBOX CHECK
+-- FIX: inspection progressbar handler (open/close doors + welder prop) - REMOVE TOOLBOX CHECK
 RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
     local veh = getRepairVehicle()
     if not veh then QBCore.Functions.Notify('No vehicle nearby','error'); return end
     
-    -- NEW: Check for toolbox before inspection
-    hasToolbox(function(has)
-        if not has then return end
+    -- REMOVED: toolbox check for diagnostics
+    local ped = PlayerPedId()
 
-        local ped = PlayerPedId()
+    local weldDict, weldAnim = "amb@world_human_welding@male@base", "base"
+    RequestAnimDict(weldDict) while not HasAnimDictLoaded(weldDict) do Wait(0) end
 
-        local weldDict, weldAnim = "amb@world_human_welding@male@base", "base"
-        RequestAnimDict(weldDict) while not HasAnimDictLoaded(weldDict) do Wait(0) end
+    OpenAllDoors(veh)
 
-        OpenAllDoors(veh)
+    TaskPlayAnim(ped, weldDict, weldAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
+    StartWeld(ped)
 
-        TaskPlayAnim(ped, weldDict, weldAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
-        StartWeld(ped)
+    if not QBCore.Functions.Progressbar then
+        Wait(3000)
+        ClearPedTasks(ped)
+        StopWeld()
+        CloseAllDoors(veh)
+        QBCore.Functions.Notify('Progressbar not available','error')
+        return
+    end
 
-        if not QBCore.Functions.Progressbar then
-            Wait(3000)
+    QBCore.Functions.Progressbar('inspect_vehicle','Inspecting vehicle...',10000,false,true,
+        { disableMovement=true, disableCarMovement=true, disableMouse=false, disableCombat=true },
+        { animDict=weldDict, anim=weldAnim, flags=49 }, {}, {},
+        function()
             ClearPedTasks(ped)
             StopWeld()
             CloseAllDoors(veh)
-            QBCore.Functions.Notify('Progressbar not available','error')
-            return
+            local clipDict, clipAnim, clipProp = "missheistdockssetup1clipboard@base", "base", `prop_notepad_01`
+            RequestAnimDict(clipDict) while not HasAnimDictLoaded(clipDict) do Wait(0) end
+            RequestModel(clipProp) while not HasModelLoaded(clipProp) do Wait(0) end
+            currentClipboard = CreateObject(clipProp, 0,0,0,true,true,false)
+            AttachEntityToEntity(currentClipboard, ped, GetPedBoneIndex(ped,18905), 0.1,0.02,0.05, -50.0,90.0,0.0, true,true,false,true,1,true)
+            TaskPlayAnim(ped, clipDict, clipAnim, 8.0, -8.0, -1, 50, 0, false, false, false)
+            TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
+        end,
+        function()
+            ClearPedTasks(ped)
+            StopWeld()
+            CloseAllDoors(veh)
+            if currentClipboard then DeleteEntity(currentClipboard) currentClipboard=nil end
+            QBCore.Functions.Notify('Inspection cancelled','error')
         end
-
-        QBCore.Functions.Progressbar('inspect_vehicle','Inspecting vehicle...',10000,false,true,
-            { disableMovement=true, disableCarMovement=true, disableMouse=false, disableCombat=true },
-            { animDict=weldDict, anim=weldAnim, flags=49 }, {}, {},
-            function()
-                ClearPedTasks(ped)
-                StopWeld()
-                CloseAllDoors(veh)
-                local clipDict, clipAnim, clipProp = "missheistdockssetup1clipboard@base", "base", `prop_notepad_01`
-                RequestAnimDict(clipDict) while not HasAnimDictLoaded(clipDict) do Wait(0) end
-                RequestModel(clipProp) while not HasModelLoaded(clipProp) do Wait(0) end
-                currentClipboard = CreateObject(clipProp, 0,0,0,true,true,false)
-                AttachEntityToEntity(currentClipboard, ped, GetPedBoneIndex(ped,18905), 0.1,0.02,0.05, -50.0,90.0,0.0, true,true,false,true,1,true)
-                TaskPlayAnim(ped, clipDict, clipAnim, 8.0, -8.0, -1, 50, 0, false, false, false)
-                TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
-            end,
-            function()
-                ClearPedTasks(ped)
-                StopWeld()
-                CloseAllDoors(veh)
-                if currentClipboard then DeleteEntity(currentClipboard) currentClipboard=nil end
-                QBCore.Functions.Notify('Inspection cancelled','error')
-            end
-        )
-    end)
+    )
 end)
 
 -- REPLACE: diagnostics menu build (fill placeholders)
@@ -702,4 +698,12 @@ RegisterNetEvent('qb-menu:client:closeMenu', function()
     StopWeld()
 end)
 
--- ...existing code...
+-- NEW: Handler for server requesting brake cache reset
+RegisterNetEvent('pf_mech:client:resetBrakeCache', function(netId)
+    local veh = NetworkGetEntityFromNetworkId(netId or 0)
+    if not veh or veh == 0 or not DoesEntityExist(veh) then return end
+    
+    pcall(function()
+        exports['pf-mechanicjob']:ResetBrakeCache(veh)
+    end)
+end)

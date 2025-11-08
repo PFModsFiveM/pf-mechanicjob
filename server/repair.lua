@@ -73,5 +73,8 @@ RegisterNetEvent('pf-mechanicjob:server:applyBrakeRepair', function(vehNet, requ
     pd.brakes = math.max(0, brakeDmg - (25 * toUse))
     st:set('partDamage', pd, true)
 
+    -- NEW: Tell client to reset brake cache immediately
+    TriggerClientEvent('pf_mech:client:resetBrakeCache', src, vehNet)
+
     TriggerClientEvent('pf-mechanicjob:client:brakeRepairResult', src, toUse, pd.brakes, nil)
 end)

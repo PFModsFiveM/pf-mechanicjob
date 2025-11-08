@@ -31,6 +31,21 @@ Config.PublicItems = {
     'tint_supplies', -- renamed from tint
 }
 
+-- Items that DON'T require a toolbox
+Config.NoToolboxRequired = {
+    'paintcan',
+    'paint_kit',
+    'coolant',
+    'newoil',
+    'engine_oil',
+    'carbattery',
+    'brakefluid',
+    'mechanic_tools',
+    'diagnostics_tool',
+    'mech_tablet',
+    'mechanic_tablet',
+}
+
 -- ============================================================================
 -- WEAR RATE TUNING
 -- ============================================================================

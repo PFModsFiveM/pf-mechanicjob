@@ -207,3 +207,31 @@ end)
 QBCore.Functions.CreateUseableItem('mechanic_tablet', function(src, item)
     TriggerClientEvent('pf-mechanicjob:client:useMechTablet', src)
 end)
+
+-- Register all repair items as useable
+local repairItems = {
+    'alternator',
+    'engine_oil',
+    'oil_filter',
+    'fuel_injector',
+    'powersteeringpump',
+    'radiator',
+    'power_steering_fluid',
+    'transmissionfluid',
+    'brakefluid',
+    'coolant',
+    'sparkplugs',
+    'carbattery',
+    'brake_pads',
+    'susp_arm',
+    'axleparts',
+    'engine_part',
+    'body_part',
+    'tire_new'
+}
+
+for _, itemName in ipairs(repairItems) do
+    QBCore.Functions.CreateUseableItem(itemName, function(source, item)
+        TriggerClientEvent('pf-mechanicjob:client:useRepairItem', source, itemName)
+    end)
+end
