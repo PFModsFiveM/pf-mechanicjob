@@ -973,3 +973,113 @@ QBCore.Functions.CreateCallback('pf_mech:hasToolbox', function(source, cb)
     cb(item ~= nil)
 end)
 
+-- =========================
+-- PREVIEW RECEIPT GENERATION
+-- =========================
+RegisterNetEvent('pf_mech:server:generatePreviewReceipt', function(data)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    -- Build description from modifications
+    local desc = 'Vehicle Preview Modifications:\n\n'
+    if data.modifications and #data.modifications > 0 then
+        for _, mod in ipairs(data.modifications) do
+            desc = desc .. string.format('• %s: %s\n', mod.category or 'Unknown', mod.value or 'None')
+        end
+    else
+        desc = desc .. 'No modifications previewed.\n'
+    end
+    
+    desc = desc .. string.format('\nVehicle: %s\nPlate: %s\n', data.vehicleModel or 'Unknown', data.plate or 'Unknown')
+    desc = desc .. string.format('Previewed by: %s [%s]\nDate: %s', 
+        Player.PlayerData.charinfo.firstname .. ' ' .. Player.PlayerData.charinfo.lastname,
+        Player.PlayerData.citizenid,
+        os.date('%Y-%m-%d %H:%M:%S')
+    )
+
+    -- Give receipt item if enabled and item exists
+    if Config.PreviewReceipt.enabled and Config.PreviewReceipt.itemName then
+        local info = {
+            description = desc,
+            modifications = data.modifications or {},
+            vehicle = data.vehicleModel or 'Unknown',
+            plate = data.plate or 'Unknown',
+            timestamp = os.time()
+        }
+        Player.Functions.AddItem(Config.PreviewReceipt.itemName, 1, false, info)
+        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[Config.PreviewReceipt.itemName], 'add', 1)
+    end
+
+    -- Send Discord webhook if configured
+    if Config.PreviewReceipt.webhookURL and Config.PreviewReceipt.webhookURL ~= '' then
+        local embed = {
+            {
+                ['title'] = Config.PreviewReceipt.webhookTitle or '🔧 Vehicle Preview Receipt',
+                ['color'] = Config.PreviewReceipt.webhookColor or 3447003,
+                ['description'] = desc,
+                ['footer'] = {
+                    ['text'] = Config.PreviewReceipt.webhookFooter or 'Preview System'
+                },
+                ['timestamp'] = os.date('!%Y-%m-%dT%H:%M:%S')
+            }
+        }
+        
+        PerformHttpRequest(Config.PreviewReceipt.webhookURL, function(err, text, headers) end, 'POST', json.encode({
+            username = 'Mechanic Preview System',
+            embeds = embed
+        }), { ['Content-Type'] = 'application/json' })
+    end
+end)
+
+RegisterNetEvent('pf_mech:givePreviewReceipt', function(receiptData)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not receiptData then return end
+    
+    -- Build description from changes
+    local desc = string.format('Preview Session - %s (%s)\n', 
+        receiptData.vehicle or 'Unknown', 
+        receiptData.plate or 'N/A'
+    )
+    desc = desc .. string.format('Date: %s\n', os.date('%Y-%m-%d %H:%M:%S', receiptData.timestamp))
+    desc = desc .. string.format('Changes Made: %d\n\n', receiptData.changeCount)
+    
+    for i, change in ipairs(receiptData.changes) do
+        desc = desc .. string.format('%d. %s\n', i, change.name)
+        desc = desc .. string.format('   From: %s\n', change.from)
+        desc = desc .. string.format('   To: %s\n', change.to)
+    end
+    
+    -- Give receipt item with metadata
+    local info = {
+        description = desc,
+        vehicle = receiptData.vehicle,
+        plate = receiptData.plate,
+        timestamp = receiptData.timestamp,
+        changes = receiptData.changeCount
+    }
+    
+    Player.Functions.AddItem(Config.PreviewReceipt.itemName, 1, false, info)
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[Config.PreviewReceipt.itemName], 'add')
+    
+    -- Optional: Discord webhook
+    if Config.PreviewReceipt.webhookURL and Config.PreviewReceipt.webhookURL ~= '' then
+        local embed = {
+            {
+                ['title'] = Config.PreviewReceipt.webhookTitle,
+                ['color'] = Config.PreviewReceipt.webhookColor,
+                ['footer'] = {['text'] = Config.PreviewReceipt.webhookFooter},
+                ['description'] = desc,
+                ['fields'] = {
+                    {['name']='Player', ['value']=GetPlayerName(src), ['inline']=true},
+                    {['name']='ID', ['value']=tostring(src), ['inline']=true},
+                    {['name']='Changes', ['value']=tostring(receiptData.changeCount), ['inline']=true},
+                }
+            }
+        }
+        PerformHttpRequest(Config.PreviewReceipt.webhookURL, function() end, 'POST', 
+            json.encode({embeds = embed}), {['Content-Type'] = 'application/json'})
+    end
+end)
+

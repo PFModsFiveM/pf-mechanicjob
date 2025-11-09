@@ -271,3 +271,17 @@ if not Config.WearTriggers then
         HardBrakeMPH        = 55.0,    -- MPH threshold for extra brake wear when braking
     }
 end
+
+-- ============================================================================
+-- PREVIEW RECEIPT SYSTEM
+-- ============================================================================
+Config.PreviewReceipt = {
+    enabled = true,                     -- Enable/disable receipt generation
+    itemName = 'preview_receipt',       -- Item to give (must exist in qb-core/shared/items.lua)
+    webhookURL = '',                    -- Discord webhook URL (leave empty to disable)
+    webhookColor = 3447003,             -- Embed color (decimal, default blue)
+    webhookTitle = '🔧 Vehicle Preview Receipt',
+    webhookFooter = 'Preview System',
+    renderMenu = true,                  -- NEW: when using the item, open qb-menu showing changes
+    menuTitle = 'Preview Receipt'       -- NEW: qb-menu title
+}

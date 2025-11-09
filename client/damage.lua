@@ -1111,564 +1111,374 @@ if Config.Debug then
     regDamageCommand('damageaxle',               'axle')
 end -- END Config.Debug block
 
--- Main damage loop
-CreateThread(function()
-    local lastPos = {}
-    while true do
-        Wait(DamageConfig.checkInterval)
-        
-        if not DamageConfig.enabled then goto continue end
-        
-        local ped = PlayerPedId()
-        if not ped or not DoesEntityExist(ped) then goto continue end
-        if not IsPedInAnyVehicle(ped, false) then goto continue end
-        
-        local veh = GetVehiclePedIsIn(ped, false)
-        if not veh or veh == 0 or not DoesEntityExist(veh) then goto continue end
-        
-        local driver = GetPedInVehicleSeat(veh, -1)
-        if driver ~= ped then goto continue end
-        
-        local plate = GetVehicleNumberPlateText(veh)
-        if repairInProgress[plate] then goto continue end
-        
-        local damage = getVehicleDamage(veh)
-        if not damage then goto continue end
-        
-        local speed = GetEntitySpeed(veh) * 2.236936
-        local rpm   = GetVehicleCurrentRpm(veh)
-        local waterDepth = getWaterDepth(veh)
-        local inMud = isInMud(veh)
+-- =========================
+-- COSMETIC PREVIEW SYSTEM
+-- =========================
+local PreviewSessions = PreviewSessions or {}
+local PreviewVeh = PreviewVeh or nil -- NEW: hold the current preview vehicle handle
 
-        -- ========== MILEAGE TRACKING ==========
-        local pos = GetEntityCoords(veh)
-        if lastPos[veh] then
-            local dist = #(pos - lastPos[veh]) * 0.000621371 -- meters to miles
-            addMileage(veh, dist)
-        end
-        lastPos[veh] = pos
-
-        -- ========== BRAKES (extended wear system) ==========
-        do
-            local cfg = Config.WearRates.brakes -- Use config values
-            local brakeAdd = 0.0
-            local speed = GetEntitySpeed(veh) * 2.236936
-            local isBraking = IsControlPressed(0, 72)
-            local isHandbrake = IsControlPressed(0, 76)
-            local isAccel = IsControlPressed(0, 71)
-            local isBrakeKey = IsControlPressed(0, 72)
-            local brakePressure = GetControlValue(0, 72) or 0
-            local steerAngle = math.abs(GetVehicleSteeringAngle(veh) or 0.0)
-
-            -- Baseline random wear while moving
-            if speed > 5.0 then
-                brakeAdd = brakeAdd + (math.random(
-                    math.floor(cfg.baselineRandomMin * 100),
-                    math.floor(cfg.baselineRandomMax * 100)
-                ) / 100.0)
-            end
-
-            -- Speed extra
-            if speed > cfg.speedExtraStartMPH then
-                local over = speed - cfg.speedExtraStartMPH
-                brakeAdd = brakeAdd + (over * cfg.speedExtraScale)
-            end
-
-            -- Active braking
-            if isBraking then
-                local base = (speed > 60) and 0.55 or (speed > 30 and 0.35 or 0.18)
-                base = base * (0.4 + (brakePressure / 255.0) * 0.9)
-                brakeAdd = brakeAdd + base
-
-                -- Sustained press bonus
-                local now = GetGameTimer()
-                if not LastBrakePress[veh] then LastBrakePress[veh] = now end
-                if (now - LastBrakePress[veh]) >= cfg.sustainedBrakeInterval then
-                    brakeAdd = brakeAdd + cfg.sustainedBonus
-                    LastBrakePress[veh] = now + 800
-                end
-
-                -- Cornering stress
-                if steerAngle > cfg.steeringAngleWearStart then
-                    local angOver = steerAngle - cfg.steeringAngleWearStart
-                    brakeAdd = brakeAdd + (angOver * cfg.steeringAngleScale)
-                end
-            else
-                LastBrakePress[veh] = nil
-            end
-
-            -- Handbrake slides
-            if isHandbrake and speed > 6.0 then
-                brakeAdd = brakeAdd + cfg.handbrakePerTick
-            end
-
-            -- Burnout (W+S)
-            if isAccel and isBrakeKey and speed > 1.5 then
-                brakeAdd = brakeAdd + cfg.burnoutExtra
-            end
-
-            -- Downhill
-            do
-                local vel = GetEntityVelocity(veh)
-                local fwd = GetEntityForwardVector(veh)
-                local fwdSpeed = vel.x*fwd.x + vel.y*fwd.y + vel.z*fwd.z
-                if isBraking and fwdSpeed < cfg.downhillDecelThreshold then
-                    brakeAdd = brakeAdd + cfg.downhillBonus
-                end
-            end
-
-            -- Heat system
-            local heat = BrakeHeat[veh] or 0
-            if isBraking or isHandbrake then
-                heat = heat + (brakeAdd * cfg.heatIncreasePerWear)
-            else
-                heat = math.max(0, heat - cfg.heatDecayPerTick)
-            end
-            BrakeHeat[veh] = heat
-
-            if heat > 120 then
-                brakeAdd = brakeAdd + (heat * cfg.heatWearScale)
-            end
-
-            if brakeAdd > 0 then
-                damage.brakes = math.min(100, (tonumber(damage.brakes) or 0) + brakeAdd)
-            end
-        end
-
-        -- ========== RADIATOR - USE CONFIG ==========
-        do
-            local cfg = Config.WearRates.radiator
-            local bodyHealth = GetVehicleBodyHealth(veh)
-            if bodyHealth < 800 then
-                local bodyDmg = (1000 - bodyHealth) / 1000
-                damage.radiator = math.min(100, (tonumber(damage.radiator) or 0) + (bodyDmg * cfg.bodyDamageScale))
-            end
-            if HasEntityCollidedWithAnything(veh) and speed > 20.0 then
-                damage.radiator = math.min(100, (tonumber(damage.radiator) or 0) + cfg.collisionDamage)
-            end
-            if waterDepth > 0.2 then
-                damage.radiator = math.min(100, (tonumber(damage.radiator) or 0) + cfg.waterIngestionRate)
-            end
-        end
-
-        -- ========== COOLANT - USE CONFIG ==========
-        do
-            local cfg = Config.WearRates.coolant
-            local coolantAdd = 0.0
-            if speed > cfg.speedThreshold then
-                local over = speed - cfg.speedThreshold
-                coolantAdd = coolantAdd + (cfg.speedLossBase + (over * cfg.speedLossScale))
-            end
-            local temp = GetVehicleEngineTemperature(veh) or 90.0
-            if temp > cfg.tempThreshold then
-                coolantAdd = coolantAdd + ((temp - cfg.tempThreshold) * cfg.tempLossScale)
-            end
-            local radDmg = tonumber(damage.radiator) or 0
-            if radDmg > cfg.radiatorDamageThreshold then
-                coolantAdd = coolantAdd + ((radDmg - cfg.radiatorDamageThreshold) * cfg.radiatorLossScale)
-            end
-            if waterDepth > 0.1 then
-                coolantAdd = coolantAdd + cfg.waterContamination
-            end
-            damage.coolant = math.min(100, (tonumber(damage.coolant) or 0) + coolantAdd)
-        end
-
-        -- ========== AXLE & SUSPENSION - USE CONFIG ==========
-        do
-            local cfg = Config.WearRates.suspension
-            local onGround = IsVehicleOnAllWheels(veh)
-            if not onGround and speed > cfg.airtimeSpeedThreshold then
-                local airFactor = math.min(2.0, speed / 60.0)
-                damage.axle       = math.min(100, (tonumber(damage.axle) or 0) + (airFactor * cfg.airtimeScale))
-                damage.suspension = math.min(100, (tonumber(damage.suspension) or 0) + (airFactor * cfg.suspensionAirtimeScale))
-            end
-            if speed > 60 then
-                damage.suspension = math.min(100, (tonumber(damage.suspension) or 0) + cfg.highSpeedWear)
-            end
-        end
-
-        -- ========== SPARK PLUGS - USE CONFIG ==========
-        do
-            local cfg = Config.WearRates.sparkplugs
-            local plugAdd = 0.0
-            local miles = getVehicleMileage(veh)
-            local mileageDmg = math.floor(miles / cfg.mileagePerPercent)
-            if mileageDmg > (tonumber(damage.sparkplugs) or 0) then
-                plugAdd = plugAdd + (mileageDmg - (tonumber(damage.sparkplugs) or 0))
-            end
-            local temp = GetVehicleEngineTemperature(veh) or 90.0
-            if temp > cfg.overheatingTempThreshold then
-                plugAdd = plugAdd + ((temp - cfg.overheatingTempThreshold) * cfg.overheatingScale)
-            end
-            if IsEntityOnFire(veh) then
-                plugAdd = plugAdd + cfg.fireDamage
-            end
-            local sparkDmg = tonumber(damage.sparkplugs) or 0
-            if sparkDmg > cfg.misfireThreshold and math.random(100) < cfg.misfireChance then
-                plugAdd = plugAdd + cfg.misfireDamage
-            end
-            local oilHealth = 100 - (tonumber(damage.oil) or 0)
-            if oilHealth < cfg.oilLeakThreshold then
-                plugAdd = plugAdd + ((cfg.oilLeakThreshold - oilHealth) * cfg.oilLeakScale)
-            end
-            damage.sparkplugs = math.min(100, (tonumber(damage.sparkplugs) or 0) + plugAdd)
-        end
-
-        -- ========== OIL & OIL FILTER (RESTORED) ==========
-        do
-            local oilAdd = DamageConfig.damageRates.oil
-            local filterAdd = DamageConfig.damageRates.oil_filter
-            
-            -- Speed multiplier
-            if speed > 80 then
-                oilAdd = oilAdd * 1.8
-                filterAdd = filterAdd * 1.5
-            end
-            
-            -- High RPM
-            if rpm > 0.85 then
-                oilAdd = oilAdd * 1.5
-            end
-            
-            -- Engine temp
-            local temp = GetVehicleEngineTemperature(veh) or 90.0
-            if temp > 110.0 then
-                oilAdd = oilAdd + ((temp - 110.0) * 0.02)
-            end
-            
-            -- Dirty filter makes oil degrade faster
-            local filterDmg = tonumber(damage.oil_filter) or 0
-            if filterDmg > 60 then
-                oilAdd = oilAdd + (filterDmg * 0.003)
-            end
-            
-            -- Dirty oil clogs filter
-            local oilDmg = tonumber(damage.oil) or 0
-            if oilDmg > 50 then
-                filterAdd = filterAdd + (oilDmg * 0.002)
-            end
-            
-            damage.oil = math.min(100, (tonumber(damage.oil) or 0) + oilAdd)
-            damage.oil_filter = math.min(100, (tonumber(damage.oil_filter) or 0) + filterAdd)
-        end
-
-        -- ========== FUEL INJECTOR (RESTORED) ==========
-        do
-            local injAdd = DamageConfig.damageRates.fuel_injector
-            if injAdd > 0 then
-                -- Degrade faster with dirty fuel (simulated by low oil quality)
-                local oilHealth = 100 - (tonumber(damage.oil) or 0)
-                if oilHealth < 40 then
-                    injAdd = injAdd * 2.0
-                end
-                
-                -- High speed wear
-                if speed > 90 then
-                    injAdd = injAdd * 1.5
-                end
-                
-                damage.fuel_injector = math.min(100, (tonumber(damage.fuel_injector) or 0) + injAdd)
-            end
-        end
-
-        -- chassis wear from terrain
-        if inMud then
-            damage.suspension = math.min(100, (tonumber(damage.suspension) or 0) + Config.WearRates.suspension.mudWear)
-            damage.axle       = math.min(100, (tonumber(damage.axle) or 0) + Config.WearRates.axle.mudWear)
-        end
-        if waterDepth > 0.30 then
-            damage.carbattery = math.min(100, (tonumber(damage.carbattery) or 0) + 0.8)
-        end
-
-        -- Persist & effects
-        applyDamage(veh, damage)
-        applyDamageEffects(veh, damage)
-        local envMultiplier = calculateEnvironmentalMultiplier(veh)
-        checkEnvironmentalWarnings(veh, envMultiplier)
-        checkComponentWarnings(veh, damage)
-        
-        ::continue::
-    end
-end)
-
--- Commands (fixed) - WRAP IN DEBUG CHECK
-if Config.Debug then
-    RegisterCommand('toggledamage', function()
-        DamageConfig.enabled = not DamageConfig.enabled
-        QBCore.Functions.Notify('Damage system: ' .. (DamageConfig.enabled and 'Enabled' or 'Disabled'), 'info')
-    end, false)
-
-    RegisterCommand('resetdamage', function()
-        local ped = PlayerPedId()
-        if not IsPedInAnyVehicle(ped, false) then
-            QBCore.Functions.Notify('Not in a vehicle', 'error')
-            return
-        end
-        local veh = GetVehiclePedIsIn(ped, false)
-        local state = Entity(veh).state
-        local damage = {
-            alternator = 0, sparkplugs = 0, carbattery = 0,
-            oil = 0, oil_filter = 0, brakes = 0,
-            suspension = 0, axle = 0,
-            fuel_injector = 0, powersteeringpump = 0, radiator = 0,
-            power_steering_fluid = 0, transmissionfluid = 0,
-            brakefluid = 0, coolant = 0
-        }
-        SafeStateSet(veh, 'partDamage', damage)
-        SetVehicleEngineHealth(veh, 1000.0)
-        SetVehicleBodyHealth(veh, 1000.0)
-        SetVehicleFixed(veh)
-        QBCore.Functions.Notify('Vehicle damage reset', 'success')
-    end, false)
-
-    RegisterCommand('savedamage', function()
-        local ped = PlayerPedId()
-        if not IsPedInAnyVehicle(ped, false) then
-            QBCore.Functions.Notify('Not in a vehicle', 'error')
-            return
-        end
-        
-        local veh = GetVehiclePedIsIn(ped, false)
-        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
-        local state = Entity(veh).state
-        local partDamage = state.partDamage or {}
-        
-        TriggerServerEvent('pf_mech:sync:forceSave', plate)
-        QBCore.Functions.Notify(string.format('Saved %s (oil: %.1f%%)', plate, tonumber(partDamage.oil) or 0), 'success')
-    end, false)
-end -- END DEBUG COMMANDS
-
--- Helper: Check if player has toolbox (moved from main.lua if needed, or reference main.lua version)
-local function hasToolbox(callback)
-    QBCore.Functions.TriggerCallback('pf_mech:hasToolbox', function(has)
-        if not has then
-            QBCore.Functions.Notify('You need a toolbox to do mechanic work!', 'error')
-        end
-        callback(has)
-    end)
+local function isMechanicJob()
+    local pd = QBCore.Functions.GetPlayerData()
+    return pd and pd.job and pd.job.name and Config.IsMechanicJob(pd.job.name) or false
 end
 
--- Generic repair item handler (replaces all individual RegisterNetEvent handlers)
-RegisterNetEvent('pf-mechanicjob:client:useRepairItem', function(itemName)
-    local veh = getRepairVehicle()
-    if not veh then return QBCore.Functions.Notify('No vehicle nearby', 'error') end
-    if not ensureControl(veh) then return QBCore.Functions.Notify('Cannot get control of vehicle', 'error') end
+local function getModDisplayName(veh, modType, index)
+    if index == -1 then return 'Stock' end
+    local lbl = GetModTextLabel(veh, modType, index)
+    if lbl and lbl ~= '' then
+        local nice = GetLabelText(lbl)
+        if nice and nice ~= 'NULL' then return nice end
+        return lbl
+    end
+    return ('Option %d'):format(index + 1)
+end
 
-    local damage = getVehicleDamage(veh) or {}
-    
-    -- Map item to damage key and check if repair is needed
-    local itemToDamageKey = {
-        alternator = 'alternator',
-        engine_oil = 'oil',
-        oil_filter = 'oil_filter',
-        fuel_injector = 'fuel_injector',
-        powersteeringpump = 'powersteeringpump',
-        radiator = 'radiator',
-        power_steering_fluid = 'power_steering_fluid',
-        transmissionfluid = 'transmissionfluid',
-        brakefluid = 'brakefluid',
-        coolant = 'coolant',
-        sparkplugs = 'sparkplugs',
-        carbattery = 'carbattery',
-        brake_pads = 'brakes',
-        susp_arm = 'suspension',
-        axleparts = 'axle',
-        engine_part = 'engine',
-        body_part = 'body',
-        tire_new = 'tires'
+local function captureVehicleAppearance(veh)
+    if not DoesEntityExist(veh) then return nil end
+    SetVehicleModKit(veh, 0)
+    local snap = { mods={}, wheelType=nil, windowTint=nil, colors={} }
+
+    local modTypes = {0,1,2,3,4,6,7,8,9,10,23,48}
+    for _, m in ipairs(modTypes) do snap.mods[m] = GetVehicleMod(veh, m) end
+    snap.wheelType = GetVehicleWheelType(veh) or 0
+    snap.windowTint = GetVehicleWindowTint(veh) or 0
+
+    local p,s = GetVehicleColours(veh)
+    local pearl,wheelCol = GetVehicleExtraColours(veh)
+    snap.colors.classic = {primary=p or 0, secondary=s or 0, pearl=pearl or 0, wheel=wheelCol or 0}
+
+    if GetIsVehiclePrimaryColourCustom(veh) then
+        local r,g,b = GetVehicleCustomPrimaryColour(veh)
+        snap.colors.customPrimary = {r=r,g=g,b=b}
+    end
+    if GetIsVehicleSecondaryColourCustom(veh) then
+        local r,g,b = GetVehicleCustomSecondaryColour(veh)
+        snap.colors.customSecondary = {r=r,g=g,b=b}
+    end
+    return snap
+end
+
+local function applySnapshot(veh, snap)
+    if not veh or not DoesEntityExist(veh) or not snap then return end
+    SetVehicleModKit(veh, 0)
+    if snap.wheelType then SetVehicleWheelType(veh, snap.wheelType) end
+    for m, idx in pairs(snap.mods) do SetVehicleMod(veh, m, idx, false) end
+    ClearVehicleCustomPrimaryColour(veh)
+    ClearVehicleCustomSecondaryColour(veh)
+    local c = snap.colors.classic or {primary=0,secondary=0,pearl=0,wheel=0}
+    SetVehicleColours(veh, c.primary, c.secondary)
+    SetVehicleExtraColours(veh, c.pearl, c.wheel)
+    if snap.colors.customPrimary then
+        SetVehicleCustomPrimaryColour(veh, snap.colors.customPrimary.r, snap.colors.customPrimary.g, snap.colors.customPrimary.b)
+    end
+    if snap.colors.customSecondary then
+        SetVehicleCustomSecondaryColour(veh, snap.colors.customSecondary.r, snap.colors.customSecondary.g, snap.colors.customSecondary.b)
+    end
+    if snap.windowTint then SetVehicleWindowTint(veh, snap.windowTint) end
+end
+
+-- Receipt integration (only calls server if Config.PreviewReceipt enabled and code exists there)
+local function generatePreviewReceipt(veh, snapshot)
+    if not Config.PreviewReceipt or not Config.PreviewReceipt.enabled then return nil end
+    local current = captureVehicleAppearance(veh)
+    if not current or not snapshot then return nil end
+    local changes = {}
+    for modType, oldIdx in pairs(snapshot.mods) do
+        local newIdx = current.mods[modType]
+        if newIdx ~= oldIdx then
+            local nameMap = {
+                [0]='Spoiler',[1]='Front Bumper',[2]='Rear Bumper',[3]='Side Skirts',
+                [4]='Exhaust',[6]='Grille',[7]='Hood',[8]='Fender',[9]='Right Fender',
+                [10]='Roof',[23]='Wheels',[48]='Livery'
+            }
+            changes[#changes+1] = {
+                type='mod',
+                name=nameMap[modType] or ('Mod '..modType),
+                from=getModDisplayName(veh, modType, oldIdx),
+                to=getModDisplayName(veh, modType, newIdx)
+            }
+        end
+    end
+    local old = snapshot.colors.customPrimary
+    local new = current.colors.customPrimary
+    if old or new then
+        local orv = old or {r=0,g=0,b=0}; local nrv = new or {r=0,g=0,b=0}
+        if orv.r~=nrv.r or orv.g~=nrv.g or orv.b~=nrv.b then
+            changes[#changes+1] = { type='color', name='Primary Color',
+                from=('RGB(%d,%d,%d)'):format(orv.r,orv.g,orv.b),
+                to=('RGB(%d,%d,%d)'):format(nrv.r,nrv.g,nrv.b) }
+        end
+    end
+    old = snapshot.colors.customSecondary
+    new = current.colors.customSecondary
+    if old or new then
+        local orv = old or {r=0,g=0,b=0}; local nrv = new or {r=0,g=0,b=0}
+        if orv.r~=nrv.r or orv.g~=nrv.g or orv.b~=nrv.b then
+            changes[#changes+1] = { type='color', name='Secondary Color',
+                from=('RGB(%d,%d,%d)'):format(orv.r,orv.g,orv.b),
+                to=('RGB(%d,%d,%d)'):format(nrv.r,nrv.g,nrv.b) }
+        end
+    end
+    if snapshot.windowTint ~= current.windowTint then
+        local tintNames={[0]='None',[1]='Pure Black',[2]='Dark Smoke',[3]='Light Smoke',[4]='Stock',[5]='Limo',[6]='Green'}
+        changes[#changes+1] = { type='tint', name='Window Tint',
+            from=tintNames[snapshot.windowTint] or 'Unknown',
+            to=tintNames[current.windowTint] or 'Unknown' }
+    end
+    if #changes == 0 then return nil end
+    return {
+        -- CHANGED: use cloud time; server will fallback if nil
+        timestamp = (GetCloudTimeAsInt and GetCloudTimeAsInt()) or (GetGameTimer and GetGameTimer()) or 0,
+        vehicle = GetDisplayNameFromVehicleModel(GetEntityModel(veh)),
+        plate = GetVehicleNumberPlateText(veh),
+        changes = changes,
+        changeCount = #changes
     }
-    
-    local damageKey = itemToDamageKey[itemName]
-    if not damageKey then return QBCore.Functions.Notify('Invalid repair item', 'error') end
-    
-    -- Special handling for engine/body (use health values)
-    if damageKey == 'engine' then
-        local engineHealth = GetVehicleEngineHealth(veh)
-        if engineHealth >= 1000.0 then return QBCore.Functions.Notify('Engine already OK', 'success') end
-    elseif damageKey == 'body' then
-        local bodyHealth = GetVehicleBodyHealth(veh)
-        if bodyHealth >= 1000.0 then return QBCore.Functions.Notify('Body already OK', 'success') end
-    elseif damageKey == 'tires' then
-        -- Check if any tire is burst
-        local hasBurstTire = false
-        for i = 0, 5 do
-            if IsVehicleTyreBurst(veh, i, false) then
-                hasBurstTire = true
-                break
-            end
-        end
-        if not hasBurstTire then return QBCore.Functions.Notify('Tires already OK', 'success') end
-    elseif damageKey == 'brakes' then
-        -- Check if any brake pad is worn
-        local brakeDmg = tonumber(damage.brakes) or 0
-        if brakeDmg <= 0 then return QBCore.Functions.Notify('Brake pads already OK', 'success') end
-    elseif damageKey == 'suspension' then
-        -- Check if suspension is damaged
-        local suspDmg = tonumber(damage.suspension) or 0
-        if suspDmg <= 0 then return QBCore.Functions.Notify('Suspension already OK', 'success') end
-    elseif damageKey == 'axle' then
-        -- Check if axle is damaged
-        local axleDmg = tonumber(damage.axle) or 0
-        if axleDmg <= 0 then return QBCore.Functions.Notify('Axle already OK', 'success') end
-    else
-        if (tonumber(damage[damageKey]) or 0) <= 0 then
-            -- Get item label for notification
-            local itemLabel = itemName:gsub('_', ' '):gsub("(%a)([%w_']*)", function(first, rest)
-                return first:upper()..rest:lower()
-            end)
-            if QBCore.Shared.Items[itemName] and QBCore.Shared.Items[itemName].label then
-                itemLabel = QBCore.Shared.Items[itemName].label
-            end
-            return QBCore.Functions.Notify(itemLabel..' already OK', 'success')
-        end
-    end
+end
 
-    -- NEW: Check if toolbox is required for this item
-    local needsToolbox = true
-    if Config.NoToolboxRequired then
-        for _, exemptItem in ipairs(Config.NoToolboxRequired) do
-            if exemptItem == itemName then
-                needsToolbox = false
-                break
-            end
-        end
-    end
+local function endPreview(veh)
+    if not veh or not DoesEntityExist(veh) then return end
+    local sess = PreviewSessions[veh]
+    if not sess or not sess.active then return end
+    local receiptData = generatePreviewReceipt(veh, sess.snapshot)
+    applySnapshot(veh, sess.snapshot)
+    PreviewSessions[veh] = nil
+    pcall(function() TriggerEvent('qb-menu:client:closeMenu') end)
+    if receiptData then TriggerServerEvent('pf_mech:givePreviewReceipt', receiptData) end
+    QBCore.Functions.Notify('Preview ended. Vehicle restored.', 'primary')
+    PreviewVeh = nil -- NEW: clear preview vehicle when ending
+end
 
-    local function doRepair()
-        -- Get item label for progress bar
-        local itemLabel = itemName:gsub('_', ' ')
-        if QBCore.Shared.Items[itemName] and QBCore.Shared.Items[itemName].label then
-            itemLabel = QBCore.Shared.Items[itemName].label
+local function ensurePreviewSession(veh)
+    if PreviewSessions[veh] and PreviewSessions[veh].active then return true end
+    local snap = captureVehicleAppearance(veh)
+    if not snap then return false end
+    PreviewSessions[veh] = { active = true, snapshot = snap }
+    PreviewVeh = veh -- NEW: remember current vehicle without passing through qb-menu
+    CreateThread(function()
+        local ped = PlayerPedId()
+        while PreviewSessions[veh] and PreviewSessions[veh].active do
+            if IsControlJustReleased(0,322) or IsControlJustReleased(0,177) or IsControlJustReleased(0,200) then
+                endPreview(veh); break
+            end
+            if not IsPedInAnyVehicle(ped,false) or GetVehiclePedIsIn(ped,false) ~= veh or GetPedInVehicleSeat(veh,-1) ~= ped then
+                endPreview(veh); break
+            end
+            Wait(120)
         end
-        
-        -- Get appropriate time based on item
-        local repairTimes = {
-            alternator = 4000,
-            engine_oil = 5000,
-            oil_filter = 3500,
-            fuel_injector = 4500,
-            powersteeringpump = 5000,
-            radiator = 6000,
-            power_steering_fluid = 3000,
-            transmissionfluid = 4000,
-            brakefluid = 3000,
-            coolant = 3500,
-            sparkplugs = 4000,
-            carbattery = 3500,
-            brake_pads = 4500,
-            susp_arm = 5000,
-            axleparts = 6000,
-            engine_part = 8000,
-            body_part = 7000,
-            tire_new = 4000
+    end)
+    return true
+end
+
+local function previewMod(veh, modType, index)
+    SetVehicleModKit(veh, 0)
+    SetVehicleMod(veh, modType, index or -1, false)
+end
+
+local function applyPrimaryColor(veh, rgb)
+    if not rgb then return end
+    ClearVehicleCustomPrimaryColour(veh)
+    SetVehicleCustomPrimaryColour(veh, rgb.r, rgb.g, rgb.b)
+end
+local function applySecondaryColor(veh, rgb)
+    if not rgb then return end
+    ClearVehicleCustomSecondaryColour(veh)
+    SetVehicleCustomSecondaryColour(veh, rgb.r, rgb.g, rgb.b)
+end
+
+local WindowTints = {
+    {label='None', val=0},{label='Pure Black',val=1},{label='Dark Smoke',val=2},
+    {label='Light Smoke',val=3},{label='Stock',val=4},{label='Limo',val=5},{label='Green',val=6}
+}
+
+local function buildModList(veh, modType)
+    local list = {}
+    SetVehicleModKit(veh,0)
+    local count = GetNumVehicleMods(veh, modType) or 0
+    list[#list+1] = { label = getModDisplayName(veh, modType, -1), index = -1 }
+    for i=0,count-1 do
+        list[#list+1] = { label = getModDisplayName(veh, modType, i), index = i }
+    end
+    return list
+end
+
+-- SAFE qb-menu opener (tries export, falls back to event), with debug
+local function OpenQBMenu(entries)
+    local ok = false
+    local success = pcall(function()
+        if exports and exports['qb-menu'] and exports['qb-menu'].openMenu then
+            exports['qb-menu']:openMenu(entries)
+            ok = true
+        end
+    end)
+    if not success or not ok then
+        TriggerEvent('qb-menu:client:openMenu', entries)
+        ok = true
+    end
+    if Config.Debug and not ok then
+        print('[PREVIEW] Failed to open qb-menu')
+    end
+    return ok
+end
+
+-- qb-menu openers (no veh in params to avoid JSON serialization errors)
+local function openModMenu(veh, label, modType)
+    local m = {
+        { header = label, isMenuHeader = true },
+    }
+    for _, it in ipairs(buildModList(veh, modType)) do
+        m[#m+1] = {
+            header = it.label,
+            shouldClose = false,
+            params = { event='pf_mech:preview:setMod', args={ modType=modType, index=it.index, label=label } } -- removed veh
         }
-        
-        local repairTime = repairTimes[itemName] or 4000
-
-        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-            if not ok then return QBCore.Functions.Notify('Missing '..itemLabel, 'error') end
-            
-            doMechanicAction('Replacing '..itemLabel, repairTime)
-            
-            -- Apply repair based on item type
-            if damageKey == 'engine' then
-                SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + 200.0))
-                damage.engine = math.max(0, (damage.engine or 0) - 20)
-            elseif damageKey == 'body' then
-                local newHealth = math.min(1000.0, GetVehicleBodyHealth(veh) + 200.0)
-                SetVehicleBodyHealth(veh, newHealth)
-                if newHealth >= 1000.0 then
-                    SetVehicleDeformationFixed(veh)
-                    SetVehicleFixed(veh)
-                end
-                damage.body = math.max(0, (damage.body or 0) - 20)
-            elseif damageKey == 'tires' then
-                -- Fix one burst tire
-                for i = 0, 5 do
-                    if IsVehicleTyreBurst(veh, i, false) then
-                        SetVehicleTyreFixed(veh, i)
-                        damage.tires = damage.tires or {}
-                        local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[i] or tostring(i)
-                        damage.tires[key] = 0
-                        break
-                    end
-                end
-            elseif damageKey == 'oil' then
-                SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + 150.0))
-                damage.oil = 0
-            elseif damageKey == 'brakes' then
-                -- FIX: per-item brake pad repair based on max_items (default 4)
-                local maxItems = (Config.PartRules.brake_pads and Config.PartRules.brake_pads.max_items) or 4
-                local perItem = 100 / maxItems                       -- each pad restores this % of health
-                local currentDamage = tonumber(damage.brakes) or 0    -- damage scale 0-100
-                local newDamage = math.max(0, currentDamage - perItem)
-                damage.brakes = newDamage
-                ResetBrakeCache(veh)
-            elseif damageKey == 'suspension' then
-                damage.suspension = math.max(0, (damage.suspension or 0) - 50)
-            elseif damageKey == 'axle' then
-                damage.axle = math.max(0, (damage.axle or 0) - 50)
-            elseif damageKey == 'sparkplugs' then
-                SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + 50.0))
-                damage.sparkplugs = math.max(0, (damage.sparkplugs or 0) - 30)
-            else
-                -- For all other parts, set to 0
-                damage[damageKey] = 0
-            end
-            
-            SafeStateSet(veh, 'partDamage', damage)
-            QBCore.Functions.Notify(itemLabel..' replaced', 'success')
-        end, itemName)
     end
+    m[#m+1] = { header='Back', params={ event='pf_mech:preview:openMain' } } -- removed veh
+    OpenQBMenu(m)
+end
 
-    -- Check for toolbox if needed
-    if needsToolbox then
-        hasToolbox(function(has)
-            if not has then return end
-            doRepair()
-        end)
+local function openColorMenu(veh, which)
+    local entries = {
+        { header = (which == 'secondary' and 'Secondary Color' or which == 'pearl' and 'Pearlescent Color' or which == 'wheel' and 'Wheel Color' or 'Primary Color'), isMenuHeader = true },
+        { header = 'Classic Indexes (0-159)', txt='Use GTA built-in color indexes', shouldClose=false, params = { event='pf_mech:preview:openColorClassic', args={ which=which } } }, -- removed veh
+    }
+    for name, col in pairs(Config.PaintPalette or {}) do
+        entries[#entries+1] = {
+            header = ('Preset: %s'):format(name),
+            shouldClose = false,
+            params = { event='pf_mech:preview:setColor', args={ which=which, rgb=col } } -- removed veh
+        }
+    end
+    entries[#entries+1] = { header='Back', params = { event='pf_mech:preview:openMain' } } -- removed veh
+    OpenQBMenu(entries)
+end
+
+local function openTintMenu(veh)
+    local m = { { header='Window Tint', isMenuHeader=true } }
+    for _,t in ipairs(WindowTints) do
+        m[#m+1] = {
+            header=t.label,
+            shouldClose=false,
+            params={ event='pf_mech:preview:setTint', args={ tint=t.val } } -- removed veh
+        }
+    end
+    m[#m+1] = { header='Back', params={ event='pf_mech:preview:openMain' } } -- removed veh
+    OpenQBMenu(m)
+end
+
+local function openClassicColorMenu(veh, which)
+    local title = ({
+        primary = 'Primary (Classic Index)',
+        secondary = 'Secondary (Classic Index)',
+        pearl = 'Pearlescent (Index)',
+        wheel = 'Wheel Color (Index)',
+    })[which] or 'Color (Index)'
+    local entries = { { header = title, isMenuHeader = true } }
+    for i = 0, 159 do
+        entries[#entries+1] = {
+            header = ('Index %d'):format(i),
+            shouldClose = false,
+            params = { event = 'pf_mech:preview:setClassicColor', args = { which = which, index = i } } -- removed veh
+        }
+    end
+    entries[#entries+1] = { header='Back', params = { event='pf_mech:preview:openColor', args={ which=which } } } -- removed veh
+    OpenQBMenu(entries)
+end
+
+-- Handlers now use PreviewVeh instead of args.veh
+RegisterNetEvent('pf_mech:preview:setMod', function(d)
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    previewMod(PreviewVeh, d.modType, d.index)
+    SetTimeout(40, function() openModMenu(PreviewVeh, d.label or 'Mod', d.modType) end)
+end)
+
+RegisterNetEvent('pf_mech:preview:setColor', function(d)
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    if d.which == 'secondary' then
+        applySecondaryColor(PreviewVeh, d.rgb)
+    elseif d.which == 'pearl' or d.which == 'wheel' then
+        QBCore.Functions.Notify('Use Classic Indexes for pearlescent/wheel colors', 'error')
     else
-        doRepair()
+        applyPrimaryColor(PreviewVeh, d.rgb)
     end
+    SetTimeout(40, function() openColorMenu(PreviewVeh, d.which) end)
 end)
 
--- Keep old individual event handlers for backwards compatibility (but they just call the new handler)
-RegisterNetEvent('pf-mechanicjob:client:use:alternator', function()
-    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'alternator')
+RegisterNetEvent('pf_mech:preview:setTint', function(d)
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    SetVehicleWindowTint(PreviewVeh, d.tint or 0)
+    SetTimeout(40, function() openTintMenu(PreviewVeh) end)
 end)
 
-RegisterNetEvent('pf-mechanicjob:client:use:engine_oil', function()
-    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'engine_oil')
+RegisterNetEvent('pf_mech:preview:setClassicColor', function(d)
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    setClassicColor(PreviewVeh, d.which, d.index)
+    SetTimeout(40, function() openClassicColorMenu(PreviewVeh, d.which) end)
 end)
 
-RegisterNetEvent('pf-mechanicjob:client:use:oil_filter', function()
-    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'oil_filter')
+RegisterNetEvent('pf_mech:preview:openMod', function(d)
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    openModMenu(PreviewVeh, d.label or 'Mod', d.modType)
 end)
 
-RegisterNetEvent('pf-mechanicjob:client:use:fuel_injector', function()
-    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'fuel_injector')
+RegisterNetEvent('pf_mech:preview:openColor', function(d)
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    local which = (d and d.which) or 'primary'
+    openColorMenu(PreviewVeh, which)
 end)
 
-RegisterNetEvent('pf-mechanicjob:client:use:powersteeringpump', function()
-    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'powersteeringpump')
+RegisterNetEvent('pf_mech:preview:openTint', function()
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    openTintMenu(PreviewVeh)
 end)
 
-RegisterNetEvent('pf-mechanicjob:client:use:radiator', function()
-    TriggerEvent('pf-mechanicjob:client:useRepairItem', 'radiator')
+RegisterNetEvent('pf_mech:preview:end', function()
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    endPreview(PreviewVeh)
 end)
 
--- power_steering_fluid (ALREADY EXISTS - keep as is)
--- ...existing code...
-
--- transmissionfluid (ALREADY EXISTS - keep as is)
--- ...existing code...
-
--- brakefluid (ALREADY EXISTS - keep as is)
--- ...existing code...
-
--- coolant (ALREADY EXISTS - keep as is)
-exports('GetPartDamageTable', function(veh)
-    if not veh or not DoesEntityExist(veh) then return {} end
-    local st = Entity(veh).state
-    return st.partDamage or {}
+RegisterNetEvent('pf_mech:preview:openMain', function()
+    local ped = PlayerPedId()
+    local veh = PreviewVeh or GetVehiclePedIsIn(ped,false)
+    if not veh or veh == 0 then return end
+    if Config.MenuSystem ~= 'qb-menu' then
+        QBCore.Functions.Notify('Preview requires qb-menu', 'error')
+        return
+    end
+    local menu = {
+        { header='Preview Cosmetics', isMenuHeader=true },
+        { header='Spoiler',        txt='Preview spoilers',        params={ event='pf_mech:preview:openMod', args={ label='Spoiler', modType=0 } } },
+        { header='Front Bumper',   txt='Preview front bumpers',   params={ event='pf_mech:preview:openMod', args={ label='Front Bumper', modType=1 } } },
+        { header='Rear Bumper',    txt='Preview rear bumpers',    params={ event='pf_mech:preview:openMod', args={ label='Rear Bumper', modType=2 } } },
+        { header='Side Skirts',    txt='Preview skirts',          params={ event='pf_mech:preview:openMod', args={ label='Side Skirts', modType=3 } } },
+        { header='Exhaust',        txt='Preview exhausts',        params={ event='pf_mech:preview:openMod', args={ label='Exhaust', modType=4 } } },
+        { header='Grille',         txt='Preview grilles',         params={ event='pf_mech:preview:openMod', args={ label='Grille', modType=6 } } },
+        { header='Hood',           txt='Preview hoods',           params={ event='pf_mech:preview:openMod', args={ label='Hood', modType=7 } } },
+        { header='Fenders',        txt='Preview fenders',         params={ event='pf_mech:preview:openMod', args={ label='Fenders', modType=8 } } },
+        { header='Right Fender',   txt='Preview right fenders',   params={ event='pf_mech:preview:openMod', args={ label='Right Fender', modType=9 } } },
+        { header='Roof',           txt='Preview roofs',           params={ event='pf_mech:preview:openMod', args={ label='Roof', modType=10 } } },
+        { header='Livery',         txt='Preview livery',          params={ event='pf_mech:preview:openMod', args={ label='Livery', modType=48 } } },
+        { header='Wheels',         txt='Preview wheels',          params={ event='pf_mech:preview:openMod', args={ label='Wheels', modType=23 } } },
+        { header='Primary Color',   txt='Classic/Presets', params={ event='pf_mech:preview:openColor', args={ which='primary' } } },
+        { header='Secondary Color', txt='Classic/Presets', params={ event='pf_mech:preview:openColor', args={ which='secondary' } } },
+        { header='Pearlescent',     txt='Classic indexes', params={ event='pf_mech:preview:openColor', args={ which='pearl' } } },
+        { header='Wheel Color',     txt='Classic indexes', params={ event='pf_mech:preview:openColor', args={ which='wheel' } } },
+        { header='Window Tint',     txt='Preview tint levels', params={ event='pf_mech:preview:openTint' } },
+        { header='Close & Revert',  txt='Exit without saving', params={ event='pf_mech:preview:end' } },
+    }
+    OpenQBMenu(menu)
 end)
+
+-- Command remains unchanged; it sets PreviewVeh via ensurePreviewSession and opens main
+RegisterCommand('preview', function()
+    if Config.MenuSystem ~= 'qb-menu' then QBCore.Functions.Notify('Preview requires qb-menu', 'error'); return end
+    if not isMechanicJob() then QBCore.Functions.Notify('Not authorized', 'error'); return end
+    local ped = PlayerPedId()
+    if not IsPedInAnyVehicle(ped,false) then QBCore.Functions.Notify('Enter a vehicle first', 'error'); return end
+    local veh = GetVehiclePedIsIn(ped,false)
+    if GetPedInVehicleSeat(veh,-1) ~= ped then QBCore.Functions.Notify('Driver seat required', 'error'); return end
+    if not ensureControl(veh) then QBCore.Functions.Notify('Cannot gain control', 'error'); return end
+    if not ensurePreviewSession(veh) then QBCore.Functions.Notify('Preview init failed', 'error'); return end
+    TriggerEvent('pf_mech:preview:openMain')
+    QBCore.Functions.Notify('Preview started. Changes will not be saved.', 'primary')
+end, false)
