@@ -452,77 +452,140 @@ AddEventHandler('QBCore:Client:UseItem', function(item)
 
     -- NEW: Toolbox handler - shows removable parts menu
     if name == 'mechanic_tools' or name == 'toolbox' then
-        local veh = nearbyVeh(6.0)
-        if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
-        
-        local plate = GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
-        local menu = {
-            { header = ('Toolbox • %s'):format(plate), isMenuHeader = true }
-        }
-        
-        -- DPF removal option (only show for diesel)
-        if Config.IsDieselCandidate(veh) then
-            local dpfRemoved = IsDPFRemoved(veh)
-            if not dpfRemoved then
-                menu[#menu+1] = {
-                    header = 'Remove DPF',
-                    txt = 'Takes 6 seconds. Enables rolling coal',
-                    params = { 
-                        event = 'pf_mech:dpf:clientRemove', 
-                        args = { plate = plate, veh = NetworkGetNetworkIdFromEntity(veh) } 
-                    }
-                }
-            else
-                menu[#menu+1] = {
-                    header = 'DPF Already Removed',
-                    txt = 'Use DPF item to reinstall',
-                    params = {}
-                }
-            end
-        else
-            menu[#menu+1] = {
-                header = 'DPF - Not Applicable',
-                txt = 'Vehicle is not diesel',
-                params = {}
-            }
-        end
-        
-        -- Future: Add more removable parts here (catalytic converter, muffler, etc)
-        
-        menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
-        exports['qb-menu']:openMenu(menu)
-        return
+      local veh = nearbyVeh(6.0)
+      if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+      
+      local plate = GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
+      
+      -- FIX: Get diagnostics and convert damage to health
+      local state = Entity(veh).state
+      local damage = state.partDamage or {}
+      
+      local menu = {
+          { header = ('Toolbox • %s'):format(plate), isMenuHeader = true },
+          { header = '--- Component Health ---', txt = 'All parts shown as health %', isMenuHeader = true }
+      }
+      
+      -- Show critical parts health
+      local parts = {
+          { key = 'oil', label = 'Engine Oil' },
+          { key = 'brakes', label = 'Brake Pads' },
+          { key = 'sparkplugs', label = 'Spark Plugs' },
+          { key = 'carbattery', label = 'Battery' },
+          { key = 'alternator', label = 'Alternator' },
+          { key = 'suspension', label = 'Suspension' },
+          { key = 'axle', label = 'Axle' },
+          { key = 'radiator', label = 'Radiator' },
+          { key = 'coolant', label = 'Coolant' }
+      }
+      
+      for _, p in ipairs(parts) do
+          local dmg = tonumber(damage[p.key]) or 0
+          local health = math.max(0, math.min(100, 100 - dmg)) -- Convert damage to health
+          local color = health > 70 and '🟢' or health > 40 and '🟡' or '🔴'
+          menu[#menu+1] = {
+              header = string.format('%s %s - %d%%', color, p.label, health),
+              txt = health < 30 and 'CRITICAL' or health < 60 and 'Needs attention' or 'Good',
+              params = {}
+          }
+      end
+      
+      menu[#menu+1] = { header = '--- Removable Parts ---', isMenuHeader = true }
+      
+      -- DPF removal option (only show for diesel)
+      if Config.IsDieselCandidate(veh) then
+          local dpfRemoved = IsDPFRemoved(veh)
+          if not dpfRemoved then
+              menu[#menu+1] = {
+                  header = 'Remove DPF',
+                  txt = 'Takes 6 seconds. Enables rolling coal',
+                  params = { 
+                      event = 'pf_mech:dpf:clientRemove', 
+                      args = { plate = plate, veh = NetworkGetNetworkIdFromEntity(veh) } 
+                  }
+              }
+          else
+              menu[#menu+1] = {
+                  header = 'DPF Already Removed',
+                  txt = 'Use DPF item to reinstall',
+                  params = {}
+              }
+          end
+      else
+          menu[#menu+1] = {
+              header = 'DPF - Not Applicable',
+              txt = 'Vehicle is not diesel',
+              params = {}
+          }
+      end
+      
+      menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+      exports['qb-menu']:openMenu(menu)
+      return
     end
 
     if name == 'diagnostics_tool' then
         local veh = nearbyVeh(6.0)
         if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+        local plate = _NormPlate(veh) or 'UNKNOWN'
+        
+        -- FIX: Show health, not damage
+        local engHealth = math.floor(math.max(0, math.min(100, GetVehicleEngineHealth(veh)/10)))
+        local bodyHealth= math.floor(math.max(0, math.min(100, GetVehicleBodyHealth(veh)/10)))
+        
+        -- Get part damage and convert to health
+        local state = Entity(veh).state
+        local damage = state.partDamage or {}
+        
+        local diesel = Config.IsDieselCandidate(veh)
+        local removed = _DPFRemoved(veh)
 
-        -- Build basic diagnostics lines (engine/body) + DPF row if diesel
-        local plate = GetVehicleNumberPlateText(veh)
-        local engPct = math.max(0, math.min(100, math.floor(GetVehicleEngineHealth(veh)/10)))
-        local bodyPct= math.max(0, math.min(100, math.floor(GetVehicleBodyHealth(veh)/10)))
         local menu = {
-            { header = ('Diagnostics • %s'):format(plate or 'N/A'), isMenuHeader = true },
-            { header = ('Engine - %d%%'):format(engPct), txt = 'Health' },
-            { header = ('Body - %d%%'):format(bodyPct),  txt = 'Health' },
+          { header = ('Diagnostics • %s'):format(plate), isMenuHeader = true },
+          { header = ('Engine Health - %d%%'):format(engHealth),  txt = engHealth < 30 and 'CRITICAL' or 'Normal' },
+          { header = ('Body Health - %d%%'):format(bodyHealth),    txt = bodyHealth < 30 and 'CRITICAL' or 'Normal' },
         }
+        
+        -- Add component health section
+        menu[#menu+1] = { header = '--- Component Health ---', isMenuHeader = true }
+        
+        local components = {
+            { key = 'oil', label = 'Engine Oil', icon = '🛢️' },
+            { key = 'brakes', label = 'Brakes', icon = '🛑' },
+            { key = 'sparkplugs', label = 'Spark Plugs', icon = '⚡' },
+            { key = 'carbattery', label = 'Battery', icon = '🔋' },
+            { key = 'alternator', label = 'Alternator', icon = '⚡' },
+            { key = 'suspension', label = 'Suspension', icon = '🔧' },
+            { key = 'axle', label = 'Axle', icon = '⚙️' },
+            { key = 'radiator', label = 'Radiator', icon = '🌡️' },
+            { key = 'coolant', label = 'Coolant', icon = '💧' }
+        }
+        
+        for _, comp in ipairs(components) do
+            local dmg = tonumber(damage[comp.key]) or 0
+            local health = math.max(0, math.min(100, 100 - dmg))
+            local status = health < 30 and 'CRITICAL' or health < 60 and 'Low' or 'Good'
+            menu[#menu+1] = {
+                header = string.format('%s %s: %d%%', comp.icon, comp.label, health),
+                txt = status,
+                params = {}
+            }
+        end
 
-        local dpfRow = buildDPFMenuRow(veh)
-        if dpfRow then menu[#menu+1] = dpfRow end
+        -- Always show DPF status row
+        menu[#menu+1] = { header = '--- DPF System ---', isMenuHeader = true }
+        menu[#menu+1] = removed and {
+          header = 'DPF (Removed)',
+          txt = diesel and 'Rolling coal enabled' or 'Non-diesel vehicle',
+          params = { event='pf_mech:dpf:clientInstall', args={ plate=plate, veh=NetworkGetNetworkIdFromEntity(veh) } }
+        } or {
+          header = 'DPF (Installed)',
+          txt = diesel and 'Remove to enable rolling coal' or 'Non-diesel vehicle',
+          params = { event='pf_mech:dpf:clientRemove', args={ plate=plate, veh=NetworkGetNetworkIdFromEntity(veh) } }
+        }
 
         menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
         exports['qb-menu']:openMenu(menu)
-        return
-    end
-
-    if name == Config.DPFItem then
-        local veh = nearbyVeh(6.0)
-        if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
-        if not Config.IsDieselCandidate(veh) then QBCore.Functions.Notify('Not a diesel vehicle','error'); return end
-        if not IsDPFRemoved(veh) then QBCore.Functions.Notify('DPF already installed','error'); return end
-        local plate = GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
-        TriggerEvent('pf_mech:dpf:clientInstall', { plate = plate, veh = NetworkGetNetworkIdFromEntity(veh) })
         return
     end
 

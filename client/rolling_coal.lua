@@ -194,10 +194,10 @@ CreateThread(function()
     local accelHeld = IsControlPressed(1, KEY_ACCEL)
     local eligible = coalEligible(veh)
     
-    -- NEW: Debug output
+    -- Debug output (keep for troubleshooting)
     if Config.Debug and accelHeld then
       local plate = GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
-      if GetGameTimer() % 2000 < 50 then -- Every 2 seconds
+      if GetGameTimer() % 2000 < 50 then
         print(string.format('[COAL DEBUG] plate=%s eligible=%s mph=%.1f dpfRemoved=%s', 
           plate, tostring(eligible), mph, tostring(CoalVehicles[plate] == true)))
       end
@@ -209,24 +209,15 @@ CreateThread(function()
         isEmittingLocal = true
         TriggerServerEvent('pf_mech:coal:syncStart', currentNetId)
         
-        -- NEW: Debug
         if Config.Debug then
           print('[COAL] Started emitting for netId: '..tostring(currentNetId))
         end
       end
     else
-      if accelHeld and not eligible then
-        -- Show one notify when player tries while DPF installed
-        if not ActiveCoal.__warned then
-          ActiveCoal.__warned = true
-          QBCore.Functions.Notify('DPF installed: remove via diagnostics tool to roll coal','error')
-          SetTimeout(3000,function() ActiveCoal.__warned=false end)
-        end
-      end
+      -- REMOVED: No notification when DPF is installed
       if isEmittingLocal and currentNetId then
         TriggerServerEvent('pf_mech:coal:syncStop', currentNetId)
         
-        -- NEW: Debug
         if Config.Debug then
           print('[COAL] Stopped emitting')
         end

@@ -1107,3 +1107,93 @@ if Config.Debug then
     regDamageCommand('damagesuspension',         'suspension')
     regDamageCommand('damageaxle',               'axle')
 end -- END Config.Debug block
+
+-- Debug command
+if Config.Debug then
+  RegisterCommand('coalstatus', function()
+    local ped = PlayerPedId()
+    if IsPedInAnyVehicle(ped, false) then
+      local veh = GetVehiclePedIsIn(ped, false)
+      local plate = _GetPlate(veh)
+      
+      -- Get damage state
+      local damage = getVehicleDamage(veh) or {}
+      
+      print('=== VEHICLE DIAGNOSTICS ===')
+      print('Plate:', plate)
+      print('Engine Health:', math.floor(GetVehicleEngineHealth(veh)/10)..'%')
+      print('Body Health:', math.floor(GetVehicleBodyHealth(veh)/10)..'%')
+      print('')
+      print('--- COMPONENT HEALTH (100% = perfect) ---')
+      print(string.format('Oil:        %3d%% (damage: %.1f%%)', 100 - (damage.oil or 0), damage.oil or 0))
+      print(string.format('Brakes:     %3d%% (damage: %.1f%%)', 100 - (damage.brakes or 0), damage.brakes or 0))
+      print(string.format('Sparkplugs: %3d%% (damage: %.1f%%)', 100 - (damage.sparkplugs or 0), damage.sparkplugs or 0))
+      print(string.format('Battery:    %3d%% (damage: %.1f%%)', 100 - (damage.carbattery or 0), damage.carbattery or 0))
+      print(string.format('Alternator: %3d%% (damage: %.1f%%)', 100 - (damage.alternator or 0), damage.alternator or 0))
+      print(string.format('Radiator:   %3d%% (damage: %.1f%%)', 100 - (damage.radiator or 0), damage.radiator or 0))
+      print(string.format('Coolant:    %3d%% (damage: %.1f%%)', 100 - (damage.coolant or 0), damage.coolant or 0))
+      print('==========================')
+    else
+      print('Not in vehicle')
+    end
+  end, false)
+end
+
+-- NEW: Main damage accumulation loop (MISSING - this is why natural wear doesn't show)
+CreateThread(function()
+    while true do
+        Wait(DamageConfig.checkInterval) -- 5 seconds
+        
+        if not DamageConfig.enabled then goto skip end
+        
+        local ped = PlayerPedId()
+        if not IsPedInAnyVehicle(ped, false) then goto skip end
+        
+        local veh = GetVehiclePedIsIn(ped, false)
+        if not veh or veh == 0 then goto skip end
+        
+        local driver = GetPedInVehicleSeat(veh, -1)
+        if driver ~= ped then goto skip end
+        
+        if not GetIsVehicleEngineRunning(veh) then goto skip end
+        
+        local damage = getVehicleDamage(veh)
+        if not damage then goto skip end
+        
+        local speed = GetEntitySpeed(veh) * 2.236936 -- MPH
+        local rpm = GetVehicleCurrentRpm(veh)
+        
+        -- Get environmental multiplier
+        local envMultiplier = calculateEnvironmentalMultiplier(veh)
+        
+        -- Apply wear to each component
+        local damageApplied = false
+        
+        for partKey, baseRate in pairs(DamageConfig.damageRates) do
+            if baseRate > 0 then
+                -- Get driving-specific multiplier
+                local drivingMult = calculateDrivingMultiplier(veh, partKey)
+                
+                -- Calculate total damage this tick
+                local totalDamage = baseRate * drivingMult * envMultiplier * speedWearFactor(speed)
+                
+                if totalDamage > 0.01 then -- Only apply if meaningful
+                    damage[partKey] = math.min(100, (damage[partKey] or 0) + totalDamage)
+                    damageApplied = true
+                end
+            end
+        end
+        
+        -- FIX: Apply damage to vehicle state so it shows in diagnostics
+        if damageApplied then
+            applyDamage(veh, damage)
+            applyDamageEffects(veh, damage)
+            
+            -- Check for warnings
+            checkComponentWarnings(veh, damage)
+            checkEnvironmentalWarnings(veh, envMultiplier)
+        end
+        
+        ::skip::
+    end
+end)

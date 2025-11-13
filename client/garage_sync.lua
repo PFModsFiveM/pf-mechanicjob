@@ -31,14 +31,6 @@ RegisterNetEvent('QBCore:Client:OnVehicleSpawn', function(veh)
             local state = Entity(veh).state
             state:set('mileage', tonumber(data.mileage) or 0, true)
         end
-        
-        -- NEW: Restore DPF removal state
-        if data.dpfRemoved then
-            if Config.Debug then
-                print(string.format('[GARAGE SYNC][QB] Restored DPF removed state for %s', plate))
-            end
-        end
-        
         if data.engineHealth then SetVehicleEngineHealth(veh, tonumber(data.engineHealth)) end
         if data.bodyHealth then SetVehicleBodyHealth(veh, tonumber(data.bodyHealth)) end
         if data.tankHealth then SetVehiclePetrolTankHealth(veh, tonumber(data.tankHealth)) end

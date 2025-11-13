@@ -20,55 +20,35 @@ RegisterNetEvent('pf_mech:dpf:remove', function(plate)
     end
     local ply = QBCore.Functions.GetPlayer(src); if not ply then return end
     CoalState[plate] = true
-    ply.Functions.AddItem('dpf', 1)
-    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['dpf'], 'add')
+    ply.Functions.AddItem(Config.DPFItem, 1)
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[Config.DPFItem], 'add')
     TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, true)
     TriggerClientEvent('pf_mech:dpf:result', src, 'remove', true, 'DPF removed - rolling coal enabled', plate, true)
     
-    -- NEW: Force save DPF state to database immediately
-    local citizenid = nil
-    local row = MySQL.single.await('SELECT citizenid FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
-    if row then citizenid = row.citizenid end
-    
-    if citizenid then
-        -- Mark DPF as removed in vehicle_diagnostics (use existing upsert if available)
-        MySQL.update.await([[
-            INSERT INTO vehicle_diagnostics (plate, citizenid, dpf_removed) 
-            VALUES (?, ?, 1)
-            ON DUPLICATE KEY UPDATE dpf_removed = 1
-        ]], { plate, citizenid })
-        
-        if Config.Debug then
-            print(string.format('[DPF] Saved removal state for %s to database', plate))
-        end
+    -- NEW: Debug
+    if Config.Debug then
+        print(string.format('[DPF SERVER] Removed DPF for %s, broadcasting to all clients', plate))
     end
 end)
 
 RegisterNetEvent('pf_mech:dpf:install', function(plate)
-    local src = source
-    plate = tostring(plate or ''):gsub('%s+',''):upper()
-    if plate == '' then return end
-    if CoalState[plate] ~= true then
-        TriggerClientEvent('pf_mech:dpf:result', src, 'install', false, 'DPF already installed', plate, false)
-        return
-    end
-    local ply = QBCore.Functions.GetPlayer(src); if not ply then return end
-    if not ply.Functions.GetItemByName('dpf') then
-        TriggerClientEvent('pf_mech:dpf:result', src, 'install', false, 'Missing DPF item', plate, true)
-        return
-    end
-    ply.Functions.RemoveItem('dpf', 1)
-    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['dpf'], 'remove')
-    CoalState[plate] = false
-    TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, false)
-    TriggerClientEvent('pf_mech:dpf:result', src, 'install', true, 'DPF installed - rolling coal disabled', plate, false)
-    
-    -- NEW: Save DPF reinstall to database
-    MySQL.update.await('UPDATE vehicle_diagnostics SET dpf_removed = 0 WHERE plate = ?', { plate })
-    
-    if Config.Debug then
-        print(string.format('[DPF] Saved reinstall state for %s to database', plate))
-    end
+  local src = source
+  plate = tostring(plate or ''):gsub('%s+',''):upper()
+  if plate == '' then return end
+  if CoalState[plate] ~= true then
+    TriggerClientEvent('pf_mech:dpf:result', src, 'install', false, 'DPF already installed', plate, false)
+    return
+  end
+  local ply = QBCore.Functions.GetPlayer(src); if not ply then return end
+  if not ply.Functions.GetItemByName('dpf') then
+    TriggerClientEvent('pf_mech:dpf:result', src, 'install', false, 'Missing DPF item', plate, true)
+    return
+  end
+  ply.Functions.RemoveItem('dpf', 1)
+  TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['dpf'], 'remove')
+  CoalState[plate] = false
+  TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, false)
+  TriggerClientEvent('pf_mech:dpf:result', src, 'install', true, 'DPF installed - rolling coal disabled', plate, false)
 end)
 
 RegisterNetEvent('pf_mech:coal:syncStart', function(netId)
