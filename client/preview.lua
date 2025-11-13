@@ -112,6 +112,35 @@ local function getModDisplayName(veh, modType, index)
     return ('Option %d'):format(index + 1)
 end
 
+-- Helper: Detect paint type from color index
+local function detectPaintType(colorIndex)
+    colorIndex = tonumber(colorIndex) or 0
+    
+    -- Check each paint type's valid range
+    -- Chameleon: 161-199
+    if colorIndex >= 161 and colorIndex <= 199 then return 'chameleon' end
+    
+    -- Metals: 117-119, 158-159
+    if (colorIndex >= 117 and colorIndex <= 119) or (colorIndex >= 158 and colorIndex <= 159) then return 'metals' end
+    
+    -- Matte: 12-14, 55, 82-84, 128, 131, 148-155
+    if colorIndex == 12 or colorIndex == 13 or colorIndex == 14 or colorIndex == 55 or 
+       (colorIndex >= 82 and colorIndex <= 84) or colorIndex == 128 or colorIndex == 131 or
+       (colorIndex >= 148 and colorIndex <= 155) then return 'matte' end
+    
+    -- Util: 15-20, 33-35, 51-53, 62-72, 88-93
+    if (colorIndex >= 15 and colorIndex <= 20) or 
+       (colorIndex >= 33 and colorIndex <= 35) or
+       (colorIndex >= 51 and colorIndex <= 53) or
+       (colorIndex >= 62 and colorIndex <= 72) or
+       (colorIndex >= 88 and colorIndex <= 93) then return 'util' end
+    
+    -- Everything else is classic/metallic (they share the same indexes)
+    -- We can't distinguish between classic and metallic without additional data,
+    -- so default to metallic which has more colors
+    return 'metallic'
+end
+
 local function captureVehicleAppearance(veh)
     if not DoesEntityExist(veh) then return nil end
     SetVehicleModKit(veh, 0)
@@ -123,13 +152,31 @@ local function captureVehicleAppearance(veh)
     local p,s = GetVehicleColours(veh)
     local pearl,wheelCol = GetVehicleExtraColours(veh)
     snap.colors.classic = {primary=p or 0, secondary=s or 0, pearl=pearl or 0, wheel=wheelCol or 0}
+    
+    -- IMPROVED: Detect actual paint types from color indexes
+    snap.colors.primaryType = detectPaintType(p or 0)
+    snap.colors.secondaryType = detectPaintType(s or 0)
+    snap.colors.pearlType = detectPaintType(pearl or 0)
+    snap.colors.wheelType = detectPaintType(wheelCol or 0)
+    
+    -- Check if we already have stored paint types in session (user changed colors)
+    if PreviewVeh and PreviewSessions[PreviewVeh] and PreviewSessions[PreviewVeh].appliedPaintTypes then
+        local applied = PreviewSessions[PreviewVeh].appliedPaintTypes
+        if applied.primary then snap.colors.primaryType = applied.primary end
+        if applied.secondary then snap.colors.secondaryType = applied.secondary end
+        if applied.pearl then snap.colors.pearlType = applied.pearl end
+        if applied.wheel then snap.colors.wheelType = applied.wheel end
+    end
+    
     if GetIsVehiclePrimaryColourCustom(veh) then
         local r,g,b = GetVehicleCustomPrimaryColour(veh)
         snap.colors.customPrimary = {r=r,g=g,b=b}
+        snap.colors.primaryType = 'custom' -- Mark as custom RGB
     end
     if GetIsVehicleSecondaryColourCustom(veh) then
         local r,g,b = GetVehicleCustomSecondaryColour(veh)
         snap.colors.customSecondary = {r=r,g=g,b=b}
+        snap.colors.secondaryType = 'custom' -- Mark as custom RGB
     end
     return snap
 end
@@ -155,11 +202,32 @@ end
 
 -- Helper: Get color name by index and paintType (NOW GTA5PaintColors IS DEFINED)
 local function getColorName(paintType, index)
+    -- Handle custom RGB colors
+    if paintType == 'custom' then
+        return 'Custom RGB'
+    end
+    
     local list = GTA5PaintColors[paintType]
-    if not list then return tostring(index) end
+    if not list then
+        -- Fallback: try to detect paint type from index
+        paintType = detectPaintType(index)
+        list = GTA5PaintColors[paintType]
+        if not list then return tostring(index) end
+    end
+    
     for _, color in ipairs(list) do
         if color.index == index then return color.name end
     end
+    
+    -- If not found in specified type, search all types (last resort)
+    for pType, colorList in pairs(GTA5PaintColors) do
+        for _, color in ipairs(colorList) do
+            if color.index == index then 
+                return color.name .. ' (' .. pType .. ')'
+            end
+        end
+    end
+    
     return tostring(index)
 end
 
@@ -188,23 +256,50 @@ local function buildModificationSummary(veh, before, after)
         end
     end
 
-    -- Colors (primary, secondary, pearl, wheel)
-    local function colorChange(label, which, paintTypeKey, bcol, acol)
-        local oldIdx = bcol or 0
-        local newIdx = acol or 0
-        if oldIdx ~= newIdx then
-            local paintType = (after.colors and after.colors[paintTypeKey]) or paintTypeKey or "classic"
-            local oldName = getColorName(paintType, oldIdx)
-            local newName = getColorName(paintType, newIdx)
-            changes[#changes+1] = ("%s: %s → %s"):format(label, oldName, newName)
-        end
-    end
-
+    -- Colors (primary, secondary, pearl, wheel) - FIX: Use applied paint types
     local bcol, acol = before.colors.classic or {}, after.colors.classic or {}
-    colorChange("Primary Color", "primary", "primaryType", bcol.primary, acol.primary)
-    colorChange("Secondary Color", "secondary", "secondaryType", bcol.secondary, acol.secondary)
-    colorChange("Pearlescent", "pearl", "pearlType", bcol.pearl, acol.pearl)
-    colorChange("Wheel Color", "wheel", "wheelType", bcol.wheel, acol.wheel)
+    
+    -- Get applied paint types from session tracking
+    local appliedTypes = {}
+    if PreviewSessions[veh] and PreviewSessions[veh].appliedPaintTypes then
+        appliedTypes = PreviewSessions[veh].appliedPaintTypes
+    end
+    
+    -- Primary Color
+    if bcol.primary ~= acol.primary then
+        local oldType = (before.colors or {}).primaryType or 'classic'
+        local newType = appliedTypes.primary or (after.colors or {}).primaryType or 'classic'
+        local oldName = getColorName(oldType, bcol.primary or 0)
+        local newName = getColorName(newType, acol.primary or 0)
+        changes[#changes+1] = ("Primary Color: %s → %s"):format(oldName, newName)
+    end
+    
+    -- Secondary Color
+    if bcol.secondary ~= acol.secondary then
+        local oldType = (before.colors or {}).secondaryType or 'classic'
+        local newType = appliedTypes.secondary or (after.colors or {}).secondaryType or 'classic'
+        local oldName = getColorName(oldType, bcol.secondary or 0)
+        local newName = getColorName(newType, acol.secondary or 0)
+        changes[#changes+1] = ("Secondary Color: %s → %s"):format(oldName, newName)
+    end
+    
+    -- Pearlescent
+    if bcol.pearl ~= acol.pearl then
+        local oldType = (before.colors or {}).pearlType or 'classic'
+        local newType = appliedTypes.pearl or (after.colors or {}).pearlType or 'classic'
+        local oldName = getColorName(oldType, bcol.pearl or 0)
+        local newName = getColorName(newType, acol.pearl or 0)
+        changes[#changes+1] = ("Pearlescent: %s → %s"):format(oldName, newName)
+    end
+    
+    -- Wheel Color
+    if bcol.wheel ~= acol.wheel then
+        local oldType = (before.colors or {}).wheelType or 'classic'
+        local newType = appliedTypes.wheel or (after.colors or {}).wheelType or 'classic'
+        local oldName = getColorName(oldType, bcol.wheel or 0)
+        local newName = getColorName(newType, acol.wheel or 0)
+        changes[#changes+1] = ("Wheel Color: %s → %s"):format(oldName, newName)
+    end
 
     -- Custom colors (RGB)
     local function rgbStr(rgb)
@@ -370,6 +465,21 @@ end)
 RegisterNetEvent("pf_mech:preview:applyPaintColor", function(d)
     if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
     SetVehicleModKit(PreviewVeh, 0)
+    
+    -- CRITICAL FIX: Update the CURRENT snapshot (not just the stored one)
+    if PreviewSessions[PreviewVeh] then
+        local snap = PreviewSessions[PreviewVeh].snapshot
+        if snap and snap.colors then
+            -- Don't update the original snapshot - that's the "before" state
+            -- We need to track the paint type separately for the "after" state
+            
+            -- Store paint type in a tracking table
+            PreviewSessions[PreviewVeh].appliedPaintTypes = PreviewSessions[PreviewVeh].appliedPaintTypes or {}
+            PreviewSessions[PreviewVeh].appliedPaintTypes[d.which] = d.paintType
+        end
+    end
+    
+    -- Apply the color
     if d.which == "primary" then
         ClearVehicleCustomPrimaryColour(PreviewVeh)
         SetVehicleColours(PreviewVeh, d.index, select(2, GetVehicleColours(PreviewVeh)))
