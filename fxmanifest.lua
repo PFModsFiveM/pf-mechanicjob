@@ -28,6 +28,7 @@ shared_scripts {
 client_scripts {
   'client/tools_menu.lua',  -- MUST remain first for early exports
   'client/damage.lua',
+  'client/preview.lua',        -- ADDED: separated preview system
   'client/main.lua',
   'client/minigames.lua',
   'client/cosmetics.lua',
