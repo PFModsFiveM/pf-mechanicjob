@@ -408,6 +408,7 @@ local function partsNeededForRepair(partKey, healthPercent)
     return needed
 end
 
+-- ADD: label for DPF
 local DiagnosticLabels = {
     alternator = "Alternator",
     sparkplugs = "Spark Plugs",
@@ -419,482 +420,68 @@ local DiagnosticLabels = {
     axleparts = "Axle Parts",
     engine_part = "Engine Part",
     body_part = "Body Panel",
-    tire_new = "Tire"
+    tire_new = "Tire",
+    dpf = "Diesel Particulate Filter"  -- NEW
 }
 
-RegisterCommand('scanveh', function()
-  local veh = nearbyVeh(6.0); if veh == 0 then return TriggerEvent('QBCore:Notify',L('no_vehicle'),'error') end
-  if isNPCVeh(veh) then
-    local id = Entity(veh).state.pf_jobId
-    QBCore.Functions.TriggerCallback('pf_mech:job:getInfo', function(job)
-      if not job then return TriggerEvent('QBCore:Notify',L('no_diagnostics'),'error') end
-      local rows = {}
-      for _, p in ipairs(job.required_parts or {}) do
-        local done = tonumber((job.installed_parts or {})[p.id] or 0)
-        local need = math.max(0, (tonumber(p.qty) or 1) - done)
-        local tag = need <= 0 and '✓' or ('x'..need)
-        local partLabel = L('part_'..p.id) or p.id:gsub('_',' '):gsub('%f[%w].', string.upper)
-        rows[#rows+1] = { 
-            header = partLabel, 
-            txt = (L('diagnostics_need')..': %s  •  '..L('diagnostics_installed')..': %d'):format(tag, done), 
-            params = {} 
-        }
-      end
-      if job.paint_req then 
-        rows[#rows+1] = { 
-            header = L('menu_paint'), 
-            txt = (L('color_primary')..': %s'):format(job.paint_req), 
-            params = {} 
-        } 
-      end
-      rows[#rows+1] = { header=L('menu_close'), params={ event='qb-menu:client:closeMenu' } }
-      table.insert(rows, 1, { 
-        header = (L('diagnostics_npc_job')..' • %s'):format(job.plate or 'Unknown'), 
-        isMenuHeader=true, 
-        params = {} 
-      })
-      exports['qb-menu']:openMenu(rows)
-    end, id)
-  else
+-- NEW: helper to build DPF menu row
+local function buildDPFMenuRow(veh)
+    if not Config.IsDieselCandidate(veh) then return nil end
     local plate = GetVehicleNumberPlateText(veh)
-    local name  = vehModelName(veh)
-    local eng = math.max(0, math.min(100, math.floor(GetVehicleEngineHealth(veh)/10)))
-    local body= math.max(0, math.min(100, math.floor(GetVehicleBodyHealth(veh)/10)))
-    local menu = {
-      { header = name, txt = (L('diagnostics_plate')..': %s'):format(plate or 'N/A'), isMenuHeader = true, params = {} },
-      { header = (L('part_engine')..' - %d%%'):format(eng), txt = L('diagnostics_health'), params = {} },
-      { header = (L('part_body')..' - %d%%'):format(body), txt = L('diagnostics_health'), params = {} },
-      { header = L('menu_close'), params = { event='qb-menu:client:closeMenu' } }
-    }
-    exports['qb-menu']:openMenu(menu)
-  end
-end)
-
--- ================== Part usage ==================
-local function posFront(veh) return GetOffsetFromEntityInWorldCoords(veh, 0.0, 1.8, 0.2) end
-local function posBack(veh)  return GetOffsetFromEntityInWorldCoords(veh, 0.0, -2.0, 0.2) end  -- NEW
-local function posUnder(veh) return GetOffsetFromEntityInWorldCoords(veh, 0.0, -0.3, -0.6) end
-local function nearestWheelPos(veh)
-  local bones = { 'wheel_lf','wheel_rf','wheel_lr','wheel_rr','wheel_lm1','wheel_rm1' }
-  local ply = PlayerPedId(); local p = GetEntityCoords(ply)
-  local best, bestDist
-  for _, b in ipairs(bones) do
-    local id = GetEntityBoneIndexByName(veh, b)
-    if id ~= -1 then
-      local c = GetWorldPositionOfEntityBone(veh, id)
-      local d = #(p - c)
-      if not bestDist or d < bestDist then bestDist = d; best = c end
-    end
-  end
-  return best or GetOffsetFromEntityInWorldCoords(veh, 0.6, 0.9, 0.2)
-end
-
-local function zoneOK(rule, veh)
-  local ped = PlayerPedId(); local p = GetEntityCoords(ped)
-  local target
-  if rule.zone == 'front' then target = posFront(veh)
-  elseif rule.zone == 'back' then target = posBack(veh)  -- NEW
-  elseif rule.zone == 'under' then target = posUnder(veh)
-  elseif rule.zone == 'exterior' then target = GetOffsetFromEntityInWorldCoords(veh, 0.0, 0.5, 0.4)
-  elseif rule.zone == 'wheel' then target = nearestWheelPos(veh) end
-  if not target then return true end
-  local r = tonumber(rule.radius or 3.0) or 3.0
-  return (#(p - target) <= r)
-end
-
--- cosmetic/performance picker UI
-local ModTypeNames = {
-  [0]='Spoiler', [1]='Front Bumper', [2]='Rear Bumper', [3]='Side Skirt',
-  [4]='Exhaust', [6]='Grille', [7]='Hood', [10]='Roof',
-  [23]='Front Wheels', [24]='Back Wheels' -- NEW
-}
-local ItemToModTypes = Config.ItemModMap or {
-  bumper   = {1,2},
-  vehicle_bumper = {1,2},
-  exhaust  = {4},
-  hood     = {7},
-  roof     = {10},
-  skirts   = {3},
-  spoiler  = {0},
-  rims     = {23}, -- NEW
-}
-
-local function openModPicker(itemName, veh)
-  if not DoesEntityExist(veh) then return end
-  
-  SetVehicleModKit(veh, 0)
-  local opts = {}
-  local types = ItemToModTypes[itemName] or {}
-  for _, mtype in ipairs(types) do
-    local count = GetNumVehicleMods(veh, mtype)
-    if count and count > 0 then
-      opts[#opts+1] = { 
-        header = (ModTypeNames[mtype] or ('Mod '..mtype)), 
-        txt = ('%d options'):format(count), 
-        params = { 
-          event = 'pf_mech:openModPickerLevel2', 
-          args = { 
-            item = itemName, 
-            modType = mtype,                      -- changed key name here
-            vehicle = NetworkGetNetworkIdFromEntity(veh) -- use consistent net id
-          }
-        } 
-      }
-    end
-  end
-  
-  if #opts == 0 then
-    return QBCore.Functions.Notify('No available mods for this vehicle', 'error')
-  end
-
-  local menu = { { header='Select Category', isMenuHeader = true } }
-  for _, o in ipairs(opts) do
-    menu[#menu+1] = o
-  end
-  menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
-  exports['qb-menu']:openMenu(menu)
-end
-
-RegisterNetEvent('pf_mech:openModPickerLevel2', function(args)
-  local veh = NetworkGetEntityFromNetworkId(args.vehicle)
-  if not DoesEntityExist(veh) then return end
-
-  SetVehicleModKit(veh, 0)
-  local count = GetNumVehicleMods(veh, args.modType) or 0         -- use args.modType
-  local menu = { { header = (ModTypeNames[args.modType] or ('Mod '..args.modType)), isMenuHeader=true } }
-  
-  for i=0,count-1 do
-    local lbl = GetModTextLabel(veh, args.modType, i)
-    local nm  = (lbl and GetLabelText(lbl) ~= 'NULL') and GetLabelText(lbl) or ('Option '..(i+1))
-    menu[#menu+1] = {
-      header = nm, txt=('Apply'),
-      params = { 
-        event = 'pf_mech:confirmModApply', 
-        args = { 
-          item = args.item, 
-          modType = args.modType,    -- ensure modType flows down
-          modIndex = i,
-          vehicle = args.vehicle 
+    local removed = IsDPFRemoved(veh)
+    if not removed then
+        return {
+            header = 'DPF (Installed)',
+            txt = 'Remove to enable rolling coal',
+            params = { event='pf_mech:dpf:clientRemove', args={ plate = plate:gsub('%s+',''):upper(), veh = NetworkGetNetworkIdFromEntity(veh) } }
         }
-      }
-    }
-  end
-  menu[#menu+1] = { header='Back', params={ event='pf_mech:openModPickerRoot', args={ item=args.item, vehicle=args.vehicle } } }
-  exports['qb-menu']:openMenu(menu)
-end)
-
--- Update root picker to handle vehicle parameter
-RegisterNetEvent('pf_mech:openModPickerRoot', function(args)
-  local veh = NetworkGetEntityFromNetworkId(args.vehicle)
-  if not DoesEntityExist(veh) then return end
-  openModPicker(args.item, veh)
-end)
-
-RegisterNetEvent('pf_mech:confirmModApply', function(args)
-    local veh = NetworkGetEntityFromNetworkId(args.vehicle)
-    if not DoesEntityExist(veh) then 
-        QBCore.Functions.Notify('Vehicle not found', 'error')
-        return 
-    end
-
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-
-        -- Start installation
-        if not DoProgress('Installing part...', timeForAction('setMod'), 'amb@world_human_vehicle_mechanic@male@base', 'base') then 
-            return 
-        end
-
-        -- Send to server for item removal and authoritative sync
-        TriggerServerEvent('pf_mech:server:applyMod', {
-            vehicle = args.vehicle,
-            item = args.item,
-            modType = args.modType,
-            modIndex = args.modIndex
-        })
-    end)
-end)
-
--- Add new handler for server confirmation
-RegisterNetEvent('pf_mech:client:modApplied', function(data)
-    local veh = NetworkGetEntityFromNetworkId(data.vehicle)
-    if not DoesEntityExist(veh) then return end
-    
-    SetVehicleModKit(veh, 0)
-    SetVehicleMod(veh, tonumber(data.modType) or data.modType, tonumber(data.modIndex) or data.modIndex, false)
-    
-    QBCore.Functions.Notify('Modification installed', 'success')
-end)
-
--- main part entry
-local installTimes = {
-    -- Performance parts
-    engine1 = 12000,
-    engine2 = 15000,
-    engine3 = 18000,
-    engine4 = 20000,
-    engine5 = 25000,
-    brakes1 = 8000,
-    brakes2 = 10000,
-    brakes3 = 12000,
-    transmission1 = 10000,
-    transmission2 = 12000,
-    transmission3 = 15000,
-    suspension1 = 8000,
-    suspension2 = 10000,
-    suspension3 = 12000,
-    suspension4 = 15000,
-    turbo = 20000,
-    -- Basic repairs
-    repair_kit = 5000,
-    tire_repair = 3000,
-    body_part = 8000,
-}
-
-RegisterNetEvent('pf_mech:tryUsePart', function(itemName)
-    if itemName == 'oilfilter' then itemName = 'oil_filter' end
-    local rule = (Config.PartRules or {})[itemName]
-    if not rule then return TriggerEvent('QBCore:Notify', 'Invalid part', 'error') end
-
-    local veh = nearbyVeh(6.0)
-    if veh == 0 then return TriggerEvent('QBCore:Notify', 'No vehicle nearby', 'error') end
-
-    -- NEW: Check if toolbox is required for this item
-    local needsToolbox = true
-    if Config.NoToolboxRequired then
-        for _, exemptItem in ipairs(Config.NoToolboxRequired) do
-            if exemptItem == itemName then
-                needsToolbox = false
-                break
-            end
-        end
-    end
-
-    local function doInstall()
-        -- Get installation time based on part complexity
-        local installTime = installTimes[itemName] or 5000
-
-        -- NEW: Get item label from QBCore.Shared.Items
-        local itemLabel = itemName:gsub('_', ' ')
-        if QBCore.Shared.Items[itemName] and QBCore.Shared.Items[itemName].label then
-            itemLabel = QBCore.Shared.Items[itemName].label
-        end
-
-        if not DoProgress('Installing '..itemLabel..'...', installTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then 
-            return TriggerEvent('QBCore:Notify', 'Installation cancelled', 'error')
-        end
-
-        local px, py, pz = table.unpack(GetEntityCoords(PlayerPedId()))
-        TriggerServerEvent('pf_mech:usePart', itemName, NetworkGetNetworkIdFromEntity(veh), nil, px, py, pz, nil)
-    end
-
-    -- Check for toolbox if needed
-    if needsToolbox then
-        hasToolbox(function(has)
-            if not has then return end
-            doInstall()
-        end)
     else
-        doInstall()
+        return {
+            header = 'DPF (Removed)',
+            txt = 'Install to disable rolling coal',
+            params = { event='pf_mech:dpf:clientInstall', args={ plate = plate:gsub('%s+',''):upper(), veh = NetworkGetNetworkIdFromEntity(veh) } }
+        }
     end
-end)
+end
 
--- apply the effect; progress already completed
-RegisterNetEvent('pf_mech:applyPart', function(data)
-    local veh = NetworkGetEntityFromNetworkId(data.net or 0)
-    if veh == 0 or not DoesEntityExist(veh) then return end
-    local qty = tonumber(data.qty) or 1
-    local state = Entity(veh).state
-    local partDamage = state.partDamage or {}
-    if data.action == 'repair' then
-        if data.type == 'body' then
-            -- FIX: body_part ONLY repairs body (NOT engine)
-            local newHealth = math.min(1000.0, GetVehicleBodyHealth(veh) + (200.0 * qty))
-            SetVehicleBodyHealth(veh, newHealth)
-            
-            -- Clear visual damage when fully repaired
-            if newHealth >= 1000.0 then
-                SetVehicleDeformationFixed(veh)
-                SetVehicleFixed(veh)
-                SetVehicleDirtLevel(veh, 0.0)
-            end
-            
-            partDamage.body = math.max(0, (partDamage.body or 0) - (20 * qty))
-            
-        elseif data.type == 'engine' then
-            -- FIX: engine_part ONLY repairs engine (NOT body)
-            local newHealth = GetVehicleEngineHealth(veh) + (150 * qty)
-            SetVehicleEngineHealth(veh, math.min(1000.0, newHealth))
-            partDamage.engine = math.max(0, (partDamage.engine or 0) - (15 * qty))
-            
-        elseif data.type == 'battery' then
-            state:set('batteryDamage', 0, true)
-            SetVehicleEngineOn(veh, true, false, false)
-            partDamage.carbattery = 0
-            
-        elseif data.type == 'sparkplugs' then
-            SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + (50 * qty)))
-            partDamage.sparkplugs = math.max(0, (partDamage.sparkplugs or 0) - (20 * qty))
-            
-        elseif data.type == 'oil' or data.type == 'engine_oil' then
-            SetVehicleEngineHealth(veh, math.min(1000.0, GetVehicleEngineHealth(veh) + (150 * qty)))
-            partDamage.oil = math.max(0, (partDamage.oil or 0) - (100 * qty))
-            
-        elseif data.type == 'alternator' then
-            partDamage.alternator = 0
-            
-        elseif data.type == 'oil_filter' then
-            partDamage.oil_filter = 0
-            
-        elseif data.type == 'brakes' then
-            partDamage.brakes = math.max(0, (partDamage.brakes or 0) - (25 * qty))
-            -- NEW: Reset brake cache immediately
-            pcall(function()
-                exports['pf-mechanicjob']:ResetBrakeCache(veh)
-            end)
-            
-        elseif data.type == 'suspension' then
-            local cur = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fTractionCurveMax') or 1.0
-            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fTractionCurveMax', cur + (0.05 * qty))
-            partDamage.suspension = math.max(0, (partDamage.suspension or 0) - (25 * qty))
-            
-        elseif data.type == 'axle' then
-            local cur = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fTractionCurveMax') or 1.0
-            SetVehicleHandlingFloat(veh, 'CHandlingData', 'fTractionCurveMax', cur + (0.05 * qty))
-            partDamage.axle = math.max(0, (partDamage.axle or 0) - (25 * qty))
-        elseif data.type == 'radiator' then
-            partDamage.radiator = 0
-        elseif data.type == 'fuel_injector' then
-            partDamage.fuel_injector = math.max(0, (partDamage.fuel_injector or 0) - (25 * qty))
-        elseif data.type == 'powersteeringpump' then
-            partDamage.powersteeringpump = 0
-        elseif data.type == 'power_steering_fluid' then
-            partDamage.power_steering_fluid = 0
-        elseif data.type == 'transmissionfluid' then
-            partDamage.transmissionfluid = 0
-        elseif data.type == 'brakefluid' then
-            partDamage.brakefluid = 0
-            -- NEW: Reset brake cache for brake fluid repairs too
-            pcall(function()
-                exports['pf-mechanicjob']:ResetBrakeCache(veh)
-            end)
-        elseif data.type == 'coolant' then
-            partDamage.coolant = 0
-        end
-    elseif data.action == 'tire' then
-        -- fix up to qty burst tyres
-        local fixed = 0
-        for i=0,5 do
-            if fixed >= qty then break end
-            if IsVehicleTyreBurst(veh, i, false) then
-                SetVehicleTyreFixed(veh, i)
-                partDamage.tires = partDamage.tires or {}
-                local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[i] or tostring(i)
-                partDamage.tires[key] = 0
-                fixed = fixed + 1
-            end
-        end
-        
-    elseif data.action == 'upgrade' then
-        SetVehicleModKit(veh, 0)
-        if data.type == 'brakes' and data.level then
-            SetVehicleMod(veh, 12, data.level - 1, false)
-        end
-        -- ...existing upgrade handlers...
-    end
-
-    -- persist any updates to partDamage back to entity state
-    SafeStateSet(veh, 'partDamage', partDamage)
-
-    if data.toast then
-        TriggerEvent('QBCore:Notify', data.toast, 'success')
-    end
-end)
-
--- Mechanics job tablet
--- RegisterNetEvent('pf-mechanicjob:client:useMechanicTools', function()
---     print('[TOOLS DEBUG] useMechanicTools event received')
---     TriggerEvent('pf-mechanicjob:client:inspectVehicle')
--- end)
-
--- REPLACE old pf-mechanicjob:client:openRepairSuggest handler with this updated version
-RegisterNetEvent('pf-mechanicjob:client:openRepairSuggest', function(data)
-    local vehicle = data.vehicle
-    local part = data.part
-    local needed = tonumber(data.needed) or 1
-    local wheel = data.wheel -- optional
-
-    if not DoesEntityExist(vehicle) then return end
-
-    local label = DiagnosticLabels[part] or part
-
-    -- helper to pick a sensible progress action
-    local function progForPart(p)
-        if p:find('tire') then return 'tire' end
-        if p:find('oil') then return 'oil' end
-        if p:find('spark') then return 'engine' end
-        if p:find('engine') then return 'engine' end
-        if p:find('carbattery') or p:find('battery') then return 'engine' end
-        if p:find('susp') then return 'susp' end
-        if p:find('axle') then return 'susp' end
-        return 'engine'
-    end
-
-    local progressAction = progForPart(part)
-    local progTime = timeForAction(progressAction) or 4000
-
-    local menu = {
-        { header = label, isMenuHeader = true, params = {} },
-        { header = ("Repair using items (%d)"):format(needed), txt = "Consumes required item(s) from your inventory.", params = {
-            event = "pf-mechanicjob:client:doRepairWithItems",
-            args = { vehicle = vehicle, part = part, needed = needed, wheel = wheel, progTime = progTime }
-        }},
-        { header = "Close", params = { event = "qb-menu:client:closeMenu" } }
-    }
-    exports['qb-menu']:openMenu(menu)
-end)
-
--- New handler: perform progress then call server to consume items & apply repair
-RegisterNetEvent('pf-mechanicjob:client:doRepairWithItems', function(data)
-    local vehicle = data.vehicle
-    local part = data.part
-    local needed = tonumber(data.needed) or 1
-    local wheel = data.wheel
-    local progTime = tonumber(data.progTime) or timeForAction('engine')
-
-    if not DoesEntityExist(vehicle) then
-        QBCore.Functions.Notify('Vehicle not found', 'error'); return
-    end
-
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-
-        -- run progress; if cancelled, abort
-        if not DoProgress('Repairing '..(part:gsub('_',' '))..'...', progTime, 'mini@repair', 'fixing_a_ped') then
-            QBCore.Functions.Notify('Repair cancelled', 'error'); return
-        end
-
-        -- ask server to remove items and perform repair
-        QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
-            if success then
-                QBCore.Functions.Notify(msg or 'Repair successful', 'success')
-            else
-                QBCore.Functions.Notify(msg or 'Missing required parts or failed', 'error')
-            end
-        end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, wheel)
-    end)
-end)
-
--- Fix the QBCore:Client:UseItem handler - restore proper routing
-RegisterNetEvent('QBCore:Client:UseItem', function(item)
-    local name = item and item.name or nil
+-- ================== diagnostics tool ==================
+-- REPLACE diagnostics_tool use handling to show full menu + DPF option
+AddEventHandler('QBCore:Client:UseItem', function(item)
+    local name = item and item.name
     if not name then return end
 
-    -- Note: paint_kit and tint_supplies are handled via server CreateUseableItem
-    -- This handler only catches items that weren't registered server-side
-    
+    if name == 'diagnostics_tool' then
+        local veh = nearbyVeh(6.0)
+        if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+
+        -- Build basic diagnostics lines (engine/body) + DPF row if diesel
+        local plate = GetVehicleNumberPlateText(veh)
+        local engPct = math.max(0, math.min(100, math.floor(GetVehicleEngineHealth(veh)/10)))
+        local bodyPct= math.max(0, math.min(100, math.floor(GetVehicleBodyHealth(veh)/10)))
+        local menu = {
+            { header = ('Diagnostics • %s'):format(plate or 'N/A'), isMenuHeader = true },
+            { header = ('Engine - %d%%'):format(engPct), txt = 'Health' },
+            { header = ('Body - %d%%'):format(bodyPct),  txt = 'Health' },
+        }
+
+        local dpfRow = buildDPFMenuRow(veh)
+        if dpfRow then menu[#menu+1] = dpfRow end
+
+        menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
+        exports['qb-menu']:openMenu(menu)
+        return
+    end
+
+    if name == Config.DPFItem then
+        local veh = nearbyVeh(6.0)
+        if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+        if not Config.IsDieselCandidate(veh) then QBCore.Functions.Notify('Not a diesel vehicle','error'); return end
+        if not IsDPFRemoved(veh) then QBCore.Functions.Notify('DPF already installed','error'); return end
+        local plate = GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
+        TriggerEvent('pf_mech:dpf:clientInstall', { plate = plate, veh = NetworkGetNetworkIdFromEntity(veh) })
+        return
+    end
+
     -- cosmetic items (mods)
     if name == "spoiler" or name == "bumper" or name == "skirts" or name == "exhaust"
        or name == "rollcage" or name == "hood" or name == "roof" then
@@ -902,13 +489,6 @@ RegisterNetEvent('QBCore:Client:UseItem', function(item)
         return
     end
 end)
-
--- Add these near the top with other local variables (SINGLE DEFINITION ONLY)
-local CosmeticItems = {
-    spoiler = true, bumper = true, skirts = true, exhaust = true, rollcage = true,
-    hood = true, roof = true, rims = true,
-    tint_supplies = true, -- changed
-}
 
 -- NEW: helper to check if player is within radius of a target point
 local function playerNear(target, radius)
@@ -1016,7 +596,7 @@ local CoalVehicles = {} -- [plate] = true/false
 -- Helper: Get normalized plate
 local function GetPlate(veh)
     if not veh or not DoesEntityExist(veh) then return nil end
-    return GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+    return GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
 end
 
 -- Helper: Check if coal is enabled for vehicle
@@ -1070,129 +650,246 @@ CreateThread(function()
     end
 end)
 
--- Add coal delete toggle to mechanic tools menu
--- This integrates with your existing tools_menu.lua export
+-- REMOVE events: pf_mech:toggleCoalDelete and pf_mech:toggleCoalDeleteNearby (legacy coal delete)
+-- REPLACE their handlers with a notice:
+
 RegisterNetEvent('pf_mech:toggleCoalDelete', function()
-    local ped = PlayerPedId()
-    local veh = GetVehiclePedIsIn(ped, false)
-    
-    if veh == 0 then
-        QBCore.Functions.Notify('You must be in a vehicle', 'error')
-        return
-    end
-    
-    if not Config.IsDieselCandidate(veh) then
-        QBCore.Functions.Notify('This vehicle is not a diesel', 'error')
-        return
-    end
-    
-    local plate = GetPlate(veh)
-    if not plate then return end
-    
-    local currentState = CoalVehicles[plate] or false
-    local newState = not currentState
-    
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-        
-        if not DoProgress('Installing coal delete...', 8000, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
-            QBCore.Functions.Notify('Installation cancelled', 'error')
-            return
-        end
-        
-        TriggerServerEvent('pf_mech:setCoalDelete', plate, newState)
-        
-        QBCore.Functions.Notify(
-            newState and '🚛 Coal delete installed - rolling coal enabled!' or '🚛 Coal delete removed',
-            newState and 'success' or 'primary',
-            5000
-        )
-    end)
+  QBCore.Functions.Notify('Use diagnostics tool to remove DPF','primary')
+end)
+RegisterNetEvent('pf_mech:toggleCoalDeleteNearby', function()
+  QBCore.Functions.Notify('Use diagnostics tool near diesel vehicle','primary')
 end)
 
--- NEW: Toggle coal delete on nearby vehicle (works outside vehicle)
-RegisterNetEvent('pf_mech:toggleCoalDeleteNearby', function(data)
-    local veh = data.vehicle
-    local plate = data.plate
-    
-    if not veh or veh == 0 or not DoesEntityExist(veh) then
-        QBCore.Functions.Notify('Vehicle not found', 'error')
-        return
-    end
-    
-    if not Config.IsDieselCandidate(veh) then
-        QBCore.Functions.Notify('This vehicle is not a diesel', 'error')
-        return
-    end
-    
-    local currentState = CoalVehicles[plate] or false
-    local newState = not currentState
-    
-    -- Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-        
-        if not DoProgress('Installing coal delete...', 8000, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
-            QBCore.Functions.Notify('Installation cancelled', 'error')
-            return
-        end
-        
-        TriggerServerEvent('pf_mech:setCoalDelete', plate, newState)
-        
-        QBCore.Functions.Notify(
-            newState and '🚛 Coal delete installed - rolling coal enabled!' or '🚛 Coal delete removed',
-            newState and 'success' or 'primary',
-            5000
-        )
-    end)
-end)
+-- ADD simple command to open DPF menu directly (fallback if item not useable):
+RegisterCommand('dpf', function()
+  local veh = nearbyVeh(6.0)
+  if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error') return end
+  local plate = GetVehicleNumberPlateText(veh)
+  if not Config.IsDieselCandidate(veh) then
+    QBCore.Functions.Notify('Not a diesel vehicle','error'); return
+  end
+  -- reuse existing menu function
+  local ok = pcall(function() openDPFMenu(veh) end)
+  if not ok then QBCore.Functions.Notify('DPF menu unavailable','error') end
+end, false)
 
--- DEBUG: Test coal system (if Config.Debug)
-if Config.Debug then
-    RegisterCommand('coalstatus', function()
-        local ped = PlayerPedId()
-        local veh = GetVehiclePedIsIn(ped, false)
-        
-        if veh == 0 then
-            veh = nearbyVeh(6.0)
-        end
-        
-        if veh == 0 then
-            print('[COAL DEBUG] No vehicle')
-            return
-        end
-        
-        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
-        local isDiesel = Config.IsDieselCandidate(veh)
-        local coalEnabled = CoalVehicles[plate] or false
-        
-        print(string.format('[COAL DEBUG] Plate: %s | Diesel: %s | Coal Enabled: %s', 
-            plate, tostring(isDiesel), tostring(coalEnabled)))
-        
-        QBCore.Functions.Notify(string.format('Diesel: %s | Coal: %s', 
-            tostring(isDiesel), tostring(coalEnabled)), 'primary', 5000)
-    end, false)
-    
-    RegisterCommand('coalforce', function(_, args)
-        local ped = PlayerPedId()
-        local veh = GetVehiclePedIsIn(ped, false)
-        
-        if veh == 0 then
-            veh = nearbyVeh(6.0)
-        end
-        
-        if veh == 0 then
-            print('[COAL DEBUG] No vehicle')
-            return
-        end
-        
-        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
-        local enable = args[1] == 'true' or args[1] == '1'
-        
-        CoalVehicles[plate] = enable
-        
-        print(string.format('[COAL DEBUG] Force set %s to %s', plate, tostring(enable)))
-        QBCore.Functions.Notify(string.format('Coal forced: %s', tostring(enable)), 'success', 3000)
-    end, false)
+-- DPF helper: get plate normalized
+local function _GetPlate(veh)
+    if not veh or not DoesEntityExist(veh) then return nil end
+    return GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
 end
+
+-- DPF state check (CoalVehicles true means DPF removed)
+function IsDPFRemoved(veh)
+    local plate = _GetPlate(veh)
+    if not plate then return false end
+    -- FIX: Use correct global variable name
+    return CoalVehicles[plate] == true
+end
+
+-- Open DPF menu (from diagnostics tool)
+local function openDPFMenu(veh)
+    if not veh or veh==0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('No vehicle nearby','error')
+        return
+    end
+    if not Config.IsDieselCandidate(veh) then
+        QBCore.Functions.Notify('Vehicle is not diesel','error')
+        return
+    end
+    local plate = _GetPlate(veh)
+    local removed = IsDPFRemoved(veh)
+    local rows = {
+        { header = ('DPF • %s'):format(plate or 'N/A'), isMenuHeader = true }
+    }
+    if not removed then
+        rows[#rows+1] = {
+            header = 'Remove DPF',
+            txt = 'Removes the Diesel Particulate Filter (enables rolling coal)',
+            params = { event='pf_mech:dpf:clientRemove', args={ plate = plate, veh = NetworkGetNetworkIdFromEntity(veh) } }
+        }
+    else
+        rows[#rows+1] = {
+            header = 'Install DPF',
+            txt = 'Reinstall filter (disables rolling coal)',
+            params = { event='pf_mech:dpf:clientInstall', args={ plate = plate, veh = NetworkGetNetworkIdFromEntity(veh) } }
+        }
+    end
+    rows[#rows+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
+    exports['qb-menu']:openMenu(rows)
+end
+
+RegisterNetEvent('pf_mech:dpf:clientRemove', function(data)
+    local veh = NetworkGetEntityFromNetworkId(data.veh or 0)
+    if not DoesEntityExist(veh) then return end
+    if IsDPFRemoved(veh) then
+        QBCore.Functions.Notify('DPF already removed','error')
+        return
+    end
+    hasToolbox(function(has)
+        if not has then return end
+        if not DoProgress('Removing DPF...', Config.DPFRemoveTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+            QBCore.Functions.Notify('Cancelled','error'); return
+        end
+        TriggerServerEvent('pf_mech:dpf:remove', data.plate)
+    end)
+end)
+
+RegisterNetEvent('pf_mech:dpf:clientInstall', function(data)
+    local veh = NetworkGetEntityFromNetworkId(data.veh or 0)
+    if not DoesEntityExist(veh) then return end
+    if not IsDPFRemoved(veh) then
+        QBCore.Functions.Notify('DPF already installed','error')
+        return
+    end
+    hasToolbox(function(has)
+        if not has then return end
+        if not DoProgress('Installing DPF...', Config.DPFInstallTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+            QBCore.Functions.Notify('Cancelled','error'); return
+        end
+        TriggerServerEvent('pf_mech:dpf:install', data.plate)
+    end)
+end)
+
+-- Hook diagnostics tool item usage to open DPF menu
+AddEventHandler('QBCore:Client:UseItem', function(item)
+    local name = item and item.name
+    if name == 'diagnostics_tool' then
+        local veh = nearbyVeh(6.0)
+        if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+        openDPFMenu(veh)
+    elseif name == Config.DPFItem then
+        -- Allow installing DPF by using the item near the front of a diesel vehicle
+        local veh = nearbyVeh(6.0)
+        if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+        if not Config.IsDieselCandidate(veh) then QBCore.Functions.Notify('Not a diesel vehicle','error'); return end
+        if not IsDPFRemoved(veh) then QBCore.Functions.Notify('DPF already installed','error'); return end
+        local plate = _GetPlate(veh)
+        TriggerEvent('pf_mech:dpf:clientInstall', { plate = plate, veh = NetworkGetNetworkIdFromEntity(veh) })
+    end
+end)
+
+-- Feedback from server
+RegisterNetEvent('pf_mech:dpf:result', function(action, success, msg, plate, state)
+    if msg then QBCore.Functions.Notify(msg, success and 'success' or 'error', 4000) end
+    if plate then
+        CoalVehicles[plate] = state and true or false
+    end
+end)
+
+RegisterCommand('scanveh', function()
+  local veh = nearbyVeh(6.0); if veh == 0 then return TriggerEvent('QBCore:Notify',L('no_vehicle'),'error') end
+  if isNPCVeh(veh) then
+    -- NPC vehicle diagnostics
+    local id = 0
+    pcall(function() id = NetworkGetEntityOwner(veh) end)
+    QBCore.Functions.TriggerCallback('pf_mech:job:getInfo', function(job)
+      local rows = {
+        { header = L('vehicle_info'), txt = '', isMenuHeader = true },
+        { header = L('part_engine'), txt = ('%.1f%%'):format(GetVehicleEngineHealth(veh)), params = {} },
+        { header = L('part_body'), txt = ('%.1f%%'):format(GetVehicleBodyHealth(veh)), params = {} },
+        { header = L('diagnostics_plate'), txt = GetVehicleNumberPlateText(veh), params = {} },
+        { header = L('diagnostics_owner'), txt = (GetPlayerName(id) or L('unknown')):gsub('^%s*(.-)%s*$','%1'), params = {} },
+      }
+      -- NEW: append DPF row for diesel vehicles
+      if Config.IsDieselCandidate(veh) then
+        local plate = GetVehicleNumberPlateText(veh)
+        local dpfRemoved = false
+        pcall(function() dpfRemoved = exports['pf-mechanicjob']:IsCoalActiveForVehicle(veh) end)
+        rows[#rows+1] = {
+          header = dpfRemoved and 'DPF (Removed)' or 'DPF (Installed)',
+          txt = dpfRemoved and 'Rolling coal enabled' or 'Remove to enable rolling coal',
+          params = { event = dpfRemoved and 'pf_mech:dpf:clientInstall' or 'pf_mech:dpf:clientRemove', args = { plate = plate:gsub('%s+',''):upper(), veh = NetworkGetNetworkIdFromEntity(veh) } }
+        }
+      end
+      exports['qb-menu']:openMenu(rows)
+    end, id)
+  else
+    -- NORMAL vehicle diagnostics
+    local plate = GetVehicleNumberPlateText(veh)
+    local name  = vehModelName(veh)
+    local eng = math.max(0, math.min(100, math.floor(GetVehicleEngineHealth(veh)/10)))
+    local body= math.max(0, math.min(100, math.floor(GetVehicleBodyHealth(veh)/10)))
+    local menu = {
+      { header = name, txt = (L('diagnostics_plate')..': %s'):format(plate or 'N/A'), isMenuHeader = true, params = {} },
+      { header = (L('part_engine')..' - %d%%'):format(eng), txt = L('diagnostics_health'), params = {} },
+      { header = (L('part_body')..' - %d%%'):format(body), txt = L('diagnostics_health'), params = {} },
+    }
+    -- NEW: DPF status row for diesel vehicles
+    if Config.IsDieselCandidate(veh) then
+      local dpfRemoved = false
+      pcall(function() dpfRemoved = exports['pf-mechanicjob']:IsCoalActiveForVehicle(veh) end)
+      menu[#menu+1] = {
+        header = dpfRemoved and 'DPF - Removed' or 'DPF - Installed',
+        txt = dpfRemoved and 'Rolling coal enabled' or 'Remove to enable rolling coal',
+        params = { event = dpfRemoved and 'pf_mech:dpf:clientInstall' or 'pf_mech:dpf:clientRemove', args = { plate = plate:gsub('%s+',''):upper(), veh = NetworkGetNetworkIdFromEntity(veh) } }
+      }
+    end
+    menu[#menu+1] = { header = L('menu_close'), params = { event='qb-menu:client:closeMenu' } }
+    exports['qb-menu']:openMenu(menu)
+  end
+end)
+
+-- Ensure single diagnostics hook (remove other AddEventHandler('QBCore:Client:UseItem') blocks above this)
+local function _NormPlate(veh)
+  return (veh and DoesEntityExist(veh)) and GetVehicleNumberPlateText(veh):gsub('%s+',''):upper() or nil
+end
+local function _DPFRemoved(veh) return veh and CoalVehicles[_NormPlate(veh)] == true end
+
+AddEventHandler('QBCore:Client:UseItem', function(item)
+  local name = item and item.name
+  if not name then return end
+
+  if name == 'diagnostics_tool' then
+    local veh = nearbyVeh(6.0)
+    if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+    local plate = _NormPlate(veh) or 'UNKNOWN'
+    local engPct = math.floor(math.max(0, math.min(100, GetVehicleEngineHealth(veh)/10)))
+    local bodyPct= math.floor(math.max(0, math.min(100, GetVehicleBodyHealth(veh)/10)))
+    local diesel = Config.IsDieselCandidate(veh)
+    local removed = _DPFRemoved(veh)
+
+    local menu = {
+      { header = ('Diagnostics • %s'):format(plate), isMenuHeader = true },
+      { header = ('Engine - %d%%'):format(engPct),  txt = 'Health' },
+      { header = ('Body - %d%%'):format(bodyPct),    txt = 'Health' },
+    }
+
+    -- Always show DPF status row
+    menu[#menu+1] = removed and {
+      header = 'DPF (Removed)',
+      txt = diesel and 'Rolling coal enabled' or 'Non-diesel vehicle',
+      params = { event='pf_mech:dpf:clientInstall', args={ plate=plate, veh=NetworkGetNetworkIdFromEntity(veh) } }
+    } or {
+      header = 'DPF (Installed)',
+      txt = diesel and 'Remove to enable rolling coal' or 'Non-diesel vehicle',
+      params = { event='pf_mech:dpf:clientRemove', args={ plate=plate, veh=NetworkGetNetworkIdFromEntity(veh) } }
+    }
+
+    menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
+    exports['qb-menu']:openMenu(menu)
+    return
+  end
+
+  if name == Config.DPFItem then
+    local veh = nearbyVeh(6.0)
+    if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+    if not _DPFRemoved(veh) then QBCore.Functions.Notify('DPF already installed','error'); return end
+    TriggerEvent('pf_mech:dpf:clientInstall', { plate=_NormPlate(veh), veh=NetworkGetNetworkIdFromEntity(veh) })
+    return
+  end
+
+  -- cosmetic items (mods)
+  if name == "spoiler" or name == "bumper" or name == "skirts" or name == "exhaust"
+     or name == "rollcage" or name == "hood" or name == "roof" then
+      -- This will be caught by server CreateUseableItem instead
+      return
+  end
+end)
+
+-- Fallback manual command
+RegisterCommand('dpfmenu', function()
+  local veh = nearbyVeh(6.0)
+  if veh == 0 then QBCore.Functions.Notify('No vehicle','error'); return end
+  TriggerEvent('QBCore:Client:UseItem', { name='diagnostics_tool' })
+end, false)

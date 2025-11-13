@@ -3,6 +3,62 @@
 -- Framework: QBCore + oxmysql
 
 local QBCore = exports['qb-core']:GetCoreObject()
+local CoalState = CoalState or {} -- [plate] = true if DPF removed
+
+QBCore.Functions.CreateCallback('pf_mech:getCoalState', function(src, cb, plate)
+  plate = tostring(plate or ''):gsub('%s+',''):upper()
+  cb(CoalState[plate] == true)
+end)
+
+RegisterNetEvent('pf_mech:dpf:remove', function(plate)
+    local src = source
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
+    if plate == '' then return end
+    if CoalState[plate] == true then
+        TriggerClientEvent('pf_mech:dpf:result', src, 'remove', false, 'DPF already removed', plate, true)
+        return
+    end
+    local ply = QBCore.Functions.GetPlayer(src); if not ply then return end
+    CoalState[plate] = true
+    ply.Functions.AddItem(Config.DPFItem, 1)
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[Config.DPFItem], 'add')
+    TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, true)
+    TriggerClientEvent('pf_mech:dpf:result', src, 'remove', true, 'DPF removed - rolling coal enabled', plate, true)
+    
+    -- NEW: Debug
+    if Config.Debug then
+        print(string.format('[DPF SERVER] Removed DPF for %s, broadcasting to all clients', plate))
+    end
+end)
+
+RegisterNetEvent('pf_mech:dpf:install', function(plate)
+  local src = source
+  plate = tostring(plate or ''):gsub('%s+',''):upper()
+  if plate == '' then return end
+  if CoalState[plate] ~= true then
+    TriggerClientEvent('pf_mech:dpf:result', src, 'install', false, 'DPF already installed', plate, false)
+    return
+  end
+  local ply = QBCore.Functions.GetPlayer(src); if not ply then return end
+  if not ply.Functions.GetItemByName('dpf') then
+    TriggerClientEvent('pf_mech:dpf:result', src, 'install', false, 'Missing DPF item', plate, true)
+    return
+  end
+  ply.Functions.RemoveItem('dpf', 1)
+  TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['dpf'], 'remove')
+  CoalState[plate] = false
+  TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, false)
+  TriggerClientEvent('pf_mech:dpf:result', src, 'install', true, 'DPF installed - rolling coal disabled', plate, false)
+end)
+
+RegisterNetEvent('pf_mech:coal:syncStart', function(netId)
+  if not Config.RollingCoal.enabled then return end
+  TriggerClientEvent('pf_mech:coal:startParticles', -1, netId)
+end)
+RegisterNetEvent('pf_mech:coal:syncStop', function(netId)
+  TriggerClientEvent('pf_mech:coal:stopParticles', -1, netId)
+end)
+
 local resource = GetCurrentResourceName()
 
 ---@type table<string, boolean>
@@ -1164,6 +1220,7 @@ end)
 
 -- Sync coal particles to all clients
 RegisterNetEvent('pf_mech:coal:syncStart', function(netId)
+    if not (Config.RollingCoal and Config.RollingCoal.enabled) then return end
     TriggerClientEvent('pf_mech:coal:startParticles', -1, netId)
 end)
 
@@ -1228,5 +1285,25 @@ end)
 RegisterServerEvent("Smoke:SyncStopParticles")
 AddEventHandler("Smoke:SyncStopParticles", function(carid)
     TriggerClientEvent("Smoke:StopParticles", -1, carid)
+end)
+
+-- Rolling coal particle relays
+RegisterNetEvent('pf_mech:coal:syncStart', function(netId)
+    if not Config.RollingCoal.enabled then return end
+    
+    -- NEW: Debug
+    if Config.Debug then
+        print(string.format('[COAL SERVER] Broadcasting start for netId: %s from source: %d', tostring(netId), source))
+    end
+    
+    TriggerClientEvent('pf_mech:coal:startParticles', -1, netId)
+end)
+RegisterNetEvent('pf_mech:coal:syncStop', function(netId)
+    -- NEW: Debug
+    if Config.Debug then
+        print(string.format('[COAL SERVER] Broadcasting stop for netId: %s', tostring(netId)))
+    end
+    
+    TriggerClientEvent('pf_mech:coal:stopParticles', -1, netId)
 end)
 

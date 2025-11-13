@@ -243,3 +243,19 @@ for _, itemName in ipairs(repairItems) do
         TriggerClientEvent('pf-mechanicjob:client:useRepairItem', source, itemName)
     end)
 end
+
+-- Diagnostics tool opens DPF menu
+QBCore.Functions.CreateUseableItem('diagnostics_tool', function(source)
+  TriggerClientEvent('QBCore:Client:UseItem', source, { name = 'diagnostics_tool' })
+end)
+
+-- DPF item (to reinstall)
+QBCore.Functions.CreateUseableItem(Config.DPFItem, function(source, item)
+  if item and item.name == Config.DPFItem then
+    TriggerClientEvent('QBCore:Client:UseItem', source, { name = Config.DPFItem })
+  end
+end)
+
+QBCore.Functions.CreateUseableItem('dpf', function(src, item)
+  TriggerClientEvent('QBCore:Client:UseItem', src, { name = 'dpf' })
+end)

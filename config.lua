@@ -441,13 +441,16 @@ Config.RollingCoal = {
     
     -- Particle effect settings (from RollCoal reference)
     effectDict = "core",
-    effectName = "ent_amb_generator_smoke",  -- USE THIS EXACT BLACK PARTICLE
-    effectScale = 1.0,                       -- default size from reference
-    emissionInterval = 80,                   -- tick for condition checks (ms)
-    rpmThreshold = 0.65,                     -- unused now (kept for compatibility)
-    -- Keep these as hints/fallbacks
+    effectName = "ent_amb_generator_smoke",
+    effectScale = 2.5,  -- NEW: Increased from 2.0 to 2.5 for even bigger particles
+    emissionInterval = 50,
+    rpmThreshold = 0.65,
+    maxMph = 40.0,
+    particlesPerBone = 10,  -- NEW: Number of particles per exhaust bone (1-250 recommended)
+    particlesNoBone = 15,   -- NEW: Number of particles when no bones found (1-250 recommended)
+    maxParticles = 250,     -- NEW: Maximum total particles allowed (safety limit)
     blackEffect = "ent_amb_generator_smoke",
-    fallbackEffect = "veh_exhaust_truck_rig" -- heavy black for big rigs if needed
+    fallbackEffect = "veh_exhaust_truck_rig"
 }
 
 -- Helper: Check if vehicle is a diesel candidate
@@ -470,3 +473,10 @@ function Config.IsDieselCandidate(veh)
     
     return false
 end
+
+-- ============================================================================
+-- DPF SYSTEM
+-- ============================================================================
+Config.DPFItem = 'dpf'            -- Item name (must exist in shared/items.lua)
+Config.DPFRemoveTime = 6000       -- Progress time (ms) to remove DPF
+Config.DPFInstallTime = 6000      -- Progress time (ms) to install DPF back
