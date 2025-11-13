@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS `vehicle_diagnostics` (
   `tankHealth` float DEFAULT 1000,
   `dirtLevel` float DEFAULT 0,
 
+  `dpf_removed` TINYINT(1) DEFAULT 0 COMMENT 'DPF removed = 1, installed = 0',
+
   PRIMARY KEY (`plate`),
   KEY `citizenid_idx` (`citizenid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

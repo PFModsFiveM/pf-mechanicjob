@@ -83,6 +83,16 @@ QBCore.Functions.CreateCallback('pf_mech:loadVehicleState', function(source, cb,
         data.bodyHealth = tonumber(diagRow.bodyHealth) or 1000.0
         data.tankHealth = tonumber(diagRow.tankHealth) or 1000.0
         data.dirtLevel = tonumber(diagRow.dirtLevel) or 0.0
+        
+        -- NEW: Load DPF removal state
+        data.dpfRemoved = (tonumber(diagRow.dpf_removed) or 0) == 1
+        
+        -- NEW: Sync DPF state to CoalState on load
+        if data.dpfRemoved then
+            -- Ensure CoalState matches database
+            if not CoalState then CoalState = {} end
+            CoalState[plate] = true
+        end
     end
     
     cb(data)

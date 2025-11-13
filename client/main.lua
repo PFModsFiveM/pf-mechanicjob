@@ -450,6 +450,50 @@ AddEventHandler('QBCore:Client:UseItem', function(item)
     local name = item and item.name
     if not name then return end
 
+    -- NEW: Toolbox handler - shows removable parts menu
+    if name == 'mechanic_tools' or name == 'toolbox' then
+        local veh = nearbyVeh(6.0)
+        if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+        
+        local plate = GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
+        local menu = {
+            { header = ('Toolbox • %s'):format(plate), isMenuHeader = true }
+        }
+        
+        -- DPF removal option (only show for diesel)
+        if Config.IsDieselCandidate(veh) then
+            local dpfRemoved = IsDPFRemoved(veh)
+            if not dpfRemoved then
+                menu[#menu+1] = {
+                    header = 'Remove DPF',
+                    txt = 'Takes 6 seconds. Enables rolling coal',
+                    params = { 
+                        event = 'pf_mech:dpf:clientRemove', 
+                        args = { plate = plate, veh = NetworkGetNetworkIdFromEntity(veh) } 
+                    }
+                }
+            else
+                menu[#menu+1] = {
+                    header = 'DPF Already Removed',
+                    txt = 'Use DPF item to reinstall',
+                    params = {}
+                }
+            end
+        else
+            menu[#menu+1] = {
+                header = 'DPF - Not Applicable',
+                txt = 'Vehicle is not diesel',
+                params = {}
+            }
+        end
+        
+        -- Future: Add more removable parts here (catalytic converter, muffler, etc)
+        
+        menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+        exports['qb-menu']:openMenu(menu)
+        return
+    end
+
     if name == 'diagnostics_tool' then
         local veh = nearbyVeh(6.0)
         if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
