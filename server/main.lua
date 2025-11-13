@@ -1083,3 +1083,25 @@ RegisterNetEvent('pf_mech:givePreviewReceipt', function(receiptData)
     end
 end)
 
+-- Give modification sheet / preview receipt
+RegisterNetEvent('pf_mech:giveModificationSheet', function(data)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    -- Use item name from config, default to 'preview_receipt'
+    local itemName = (Config.PreviewReceipt and Config.PreviewReceipt.itemName) or 'preview_receipt'
+    
+    local info = {
+        vehicle = data.vehicle or "Unknown Vehicle",
+        plate = data.plate or "N/A",
+        description = data.description or "No changes recorded",
+        timestamp = os.time()
+    }
+
+    -- Add the item with metadata
+    Player.Functions.AddItem(itemName, 1, false, info)
+    TriggerClientEvent('QBCore:Notify', src, 'Preview Receipt added to your inventory.', 'success')
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], 'add', 1)
+end)
+

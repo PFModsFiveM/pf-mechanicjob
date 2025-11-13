@@ -6,242 +6,7 @@ local QBCore = exports['qb-core']:GetCoreObject()
 local PreviewSessions = PreviewSessions or {}
 local PreviewVeh = PreviewVeh or nil
 
-local function isMechanicJob()
-    local pd = QBCore.Functions.GetPlayerData()
-    return pd and pd.job and pd.job.name and Config.IsMechanicJob(pd.job.name) or false
-end
-
-local function getModDisplayName(veh, modType, index)
-    if index == -1 then return 'Stock' end
-    local lbl = GetModTextLabel(veh, modType, index)
-    if lbl and lbl ~= '' then
-        local nice = GetLabelText(lbl)
-        if nice and nice ~= 'NULL' then return nice end
-        return lbl
-    end
-    return ('Option %d'):format(index + 1)
-end
-
-local function captureVehicleAppearance(veh)
-    if not DoesEntityExist(veh) then return nil end
-    SetVehicleModKit(veh, 0)
-    local snap = { mods={}, wheelType=nil, windowTint=nil, colors={} }
-    local modTypes = {0,1,2,3,4,6,7,8,9,10,23,48}
-    for _, m in ipairs(modTypes) do snap.mods[m] = GetVehicleMod(veh, m) end
-    snap.wheelType = GetVehicleWheelType(veh) or 0
-    snap.windowTint = GetVehicleWindowTint(veh) or 0
-    local p,s = GetVehicleColours(veh)
-    local pearl,wheelCol = GetVehicleExtraColours(veh)
-    snap.colors.classic = {primary=p or 0, secondary=s or 0, pearl=pearl or 0, wheel=wheelCol or 0}
-    if GetIsVehiclePrimaryColourCustom(veh) then
-        local r,g,b = GetVehicleCustomPrimaryColour(veh)
-        snap.colors.customPrimary = {r=r,g=g,b=b}
-    end
-    if GetIsVehicleSecondaryColourCustom(veh) then
-        local r,g,b = GetVehicleCustomSecondaryColour(veh)
-        snap.colors.customSecondary = {r=r,g=g,b=b}
-    end
-    return snap
-end
-
-local function applySnapshot(veh, snap)
-    if not veh or not DoesEntityExist(veh) or not snap then return end
-    SetVehicleModKit(veh, 0)
-    if snap.wheelType then SetVehicleWheelType(veh, snap.wheelType) end
-    for m, idx in pairs(snap.mods) do SetVehicleMod(veh, m, idx, false) end
-    ClearVehicleCustomPrimaryColour(veh)
-    ClearVehicleCustomSecondaryColour(veh)
-    local c = snap.colors.classic or {primary=0,secondary=0,pearl=0,wheel=0}
-    SetVehicleColours(veh, c.primary, c.secondary)
-    SetVehicleExtraColours(veh, c.pearl, c.wheel)
-    if snap.colors.customPrimary then
-        SetVehicleCustomPrimaryColour(veh, snap.colors.customPrimary.r, snap.colors.customPrimary.g, snap.colors.customPrimary.b)
-    end
-    if snap.colors.customSecondary then
-        SetVehicleCustomSecondaryColour(veh, snap.colors.customSecondary.r, snap.colors.customSecondary.g, snap.colors.customSecondary.b)
-    end
-    if snap.windowTint then SetVehicleWindowTint(veh, snap.windowTint) end
-end
-
-local function generatePreviewReceipt(veh, snapshot)
-    if not Config.PreviewReceipt or not Config.PreviewReceipt.enabled then return nil end
-    local current = captureVehicleAppearance(veh)
-    if not current or not snapshot then return nil end
-    local changes = {}
-    for modType, oldIdx in pairs(snapshot.mods) do
-        local newIdx = current.mods[modType]
-        if newIdx ~= oldIdx then
-            local nameMap = {
-                [0]='Spoiler',[1]='Front Bumper',[2]='Rear Bumper',[3]='Side Skirts',
-                [4]='Exhaust',[6]='Grille',[7]='Hood',[8]='Fender',[9]='Right Fender',
-                [10]='Roof',[23]='Wheels',[48]='Livery'
-            }
-            changes[#changes+1] = {
-                type='mod',
-                name=nameMap[modType] or ('Mod '..modType),
-                from=getModDisplayName(veh, modType, oldIdx),
-                to=getModDisplayName(veh, modType, newIdx)
-            }
-        end
-    end
-    local old,new = snapshot.colors.customPrimary, current.colors.customPrimary
-    if old or new then
-        local a = old or {r=0,g=0,b=0}; local b = new or {r=0,g=0,b=0}
-        if a.r~=b.r or a.g~=b.g or a.b~=b.b then
-            changes[#changes+1] = { type='color', name='Primary Color',
-                from=('RGB(%d,%d,%d)'):format(a.r,a.g,a.b),
-                to=('RGB(%d,%d,%d)'):format(b.r,b.g,b.b) }
-        end
-    end
-    old,new = snapshot.colors.customSecondary, current.colors.customSecondary
-    if old or new then
-        local a = old or {r=0,g=0,b=0}; local b = new or {r=0,g=0,b=0}
-        if a.r~=b.r or a.g~=b.g or a.b~=b.b then
-            changes[#changes+1] = { type='color', name='Secondary Color',
-                from=('RGB(%d,%d,%d)'):format(a.r,a.g,a.b),
-                to=('RGB(%d,%d,%d)'):format(b.r,b.g,b.b) }
-        end
-    end
-    if snapshot.windowTint ~= current.windowTint then
-        local tintNames={[0]='None',[1]='Pure Black',[2]='Dark Smoke',[3]='Light Smoke',[4]='Stock',[5]='Limo',[6]='Green'}
-        changes[#changes+1] = { type='tint', name='Window Tint',
-            from=tintNames[snapshot.windowTint] or 'Unknown',
-            to=tintNames[current.windowTint] or 'Unknown' }
-    end
-    if #changes == 0 then return nil end
-    return {
-        timestamp = (GetCloudTimeAsInt and GetCloudTimeAsInt()) or (GetGameTimer and GetGameTimer()) or 0,
-        vehicle = GetDisplayNameFromVehicleModel(GetEntityModel(veh)),
-        plate = GetVehicleNumberPlateText(veh),
-        changes = changes,
-        changeCount = #changes
-    }
-end
-
-local function endPreview(veh)
-    if not veh or not DoesEntityExist(veh) then return end
-    local sess = PreviewSessions[veh]
-    if not sess or not sess.active then return end
-    local receiptData = generatePreviewReceipt(veh, sess.snapshot)
-    applySnapshot(veh, sess.snapshot)
-    PreviewSessions[veh] = nil
-    pcall(function() TriggerEvent('qb-menu:client:closeMenu') end)
-    if receiptData then TriggerServerEvent('pf_mech:givePreviewReceipt', receiptData) end
-    QBCore.Functions.Notify('Preview ended. Vehicle restored.', 'primary')
-    PreviewVeh = nil
-end
-
-local function ensurePreviewSession(veh)
-    if PreviewSessions[veh] and PreviewSessions[veh].active then return true end
-    local snap = captureVehicleAppearance(veh)
-    if not snap then return false end
-    PreviewSessions[veh] = { active = true, snapshot = snap }
-    PreviewVeh = veh
-    CreateThread(function()
-        local ped = PlayerPedId()
-        while PreviewSessions[veh] and PreviewSessions[veh].active do
-            if IsControlJustReleased(0,322) or IsControlJustReleased(0,177) or IsControlJustReleased(0,200) then
-                endPreview(veh); break
-            end
-            if not IsPedInAnyVehicle(ped,false) or GetVehiclePedIsIn(ped,false) ~= veh or GetPedInVehicleSeat(veh,-1) ~= ped then
-                endPreview(veh); break
-            end
-            Wait(120)
-        end
-    end)
-    return true
-end
-
-local function previewMod(veh, modType, index)
-    SetVehicleModKit(veh, 0)
-    SetVehicleMod(veh, modType, index or -1, false)
-end
-
-local function applyPrimaryColor(veh, rgb)
-    if not rgb then return end
-    ClearVehicleCustomPrimaryColour(veh)
-    SetVehicleCustomPrimaryColour(veh, rgb.r, rgb.g, rgb.b)
-end
-local function applySecondaryColor(veh, rgb)
-    if not rgb then return end
-    ClearVehicleCustomSecondaryColour(veh)
-    SetVehicleCustomSecondaryColour(veh, rgb.r, rgb.g, rgb.b)
-end
-
--- Missing helper previously implied
-local function setClassicColor(veh, which, index)
-    if not DoesEntityExist(veh) then return end
-    SetVehicleModKit(veh,0)
-    if which == 'primary' then
-        ClearVehicleCustomPrimaryColour(veh)
-        local p,s = GetVehicleColours(veh)
-        SetVehicleColours(veh, index, s)
-    elseif which == 'secondary' then
-        ClearVehicleCustomSecondaryColour(veh)
-        local p,s = GetVehicleColours(veh)
-        SetVehicleColours(veh, p, index)
-    elseif which == 'pearl' then
-        local _,w = GetVehicleExtraColours(veh)
-        SetVehicleExtraColours(veh, index, w)
-    elseif which == 'wheel' then
-        local prl,_ = GetVehicleExtraColours(veh)
-        SetVehicleExtraColours(veh, prl, index)
-    end
-end
-
-local WindowTints = {
-    {label='None', val=0},{label='Pure Black',val=1},{label='Dark Smoke',val=2},
-    {label='Light Smoke',val=3},{label='Stock',val=4},{label='Limo',val=5},{label='Green',val=6}
-}
-
-local function buildModList(veh, modType)
-    local list = {}
-    SetVehicleModKit(veh,0)
-    local count = GetNumVehicleMods(veh, modType) or 0
-    list[#list+1] = { label = getModDisplayName(veh, modType, -1), index = -1 }
-    for i=0,count-1 do
-        list[#list+1] = { label = getModDisplayName(veh, modType, i), index = i }
-    end
-    return list
-end
-
-local function OpenQBMenu(entries)
-    local ok = false
-    local success = pcall(function()
-        if exports and exports['qb-menu'] and exports['qb-menu'].openMenu then
-            exports['qb-menu']:openMenu(entries); ok = true
-        end
-    end)
-    if not success or not ok then TriggerEvent('qb-menu:client:openMenu', entries); ok = true end
-    return ok
-end
-
-local function openModMenu(veh, label, modType)
-    local m = { { header = label, isMenuHeader = true }, }
-    for _, it in ipairs(buildModList(veh, modType)) do
-        m[#m+1] = {
-            header = it.label, shouldClose = false,
-            params = { event='pf_mech:preview:setMod', args={ modType=modType, index=it.index, label=label } }
-        }
-    end
-    m[#m+1] = { header='Back', params={ event='pf_mech:preview:openMain' } }
-    OpenQBMenu(m)
-end
-
-local function openColorMenu(veh, which)
-    local entries = {
-        { header = (which == 'secondary' and 'Secondary Color' or which == 'pearl' and 'Pearlescent Color' or which == 'wheel' and 'Wheel Color' or 'Primary Color'), isMenuHeader = true },
-        { header = 'Classic',    params = { event = 'pf_mech:preview:openPaintCategory', args = { which = which } } },
-        { header = 'Metallic',   params = { event = 'pf_mech:preview:openPaintCategory', args = { which = which } } },
-        { header = 'Matte',      params = { event = 'pf_mech:preview:openPaintCategory', args = { which = which } } },
-        { header = 'Metals',     params = { event = 'pf_mech:preview:openPaintCategory', args = { which = which } } },
-        { header = 'Util',       params = { event = 'pf_mech:preview:openPaintCategory', args = { which = which } } },
-        { header = 'Chameleon',  params = { event = 'pf_mech:preview:openPaintCategory', args = { which = which } } },
-    }
-    OpenQBMenu(entries)
-end
-
--- GTA 5 paint color tables (expand as needed)
+-- GTA 5 paint color tables (MOVED UP - MUST BE BEFORE getColorName())
 local GTA5PaintColors = {
     classic = {
         { name = "Black", index = 0 }, { name = "Graphite", index = 1 }, { name = "Black Steel", index = 2 }, { name = "Dark Steel", index = 3 },
@@ -326,6 +91,237 @@ local GTA5PaintColors = {
     }
 }
 
+local WindowTints = {
+    {label='None', val=0},{label='Pure Black',val=1},{label='Dark Smoke',val=2},
+    {label='Light Smoke',val=3},{label='Stock',val=4},{label='Limo',val=5},{label='Green',val=6}
+}
+
+local function isMechanicJob()
+    local pd = QBCore.Functions.GetPlayerData()
+    return pd and pd.job and pd.job.name and Config.IsMechanicJob(pd.job.name) or false
+end
+
+local function getModDisplayName(veh, modType, index)
+    if index == -1 then return 'Stock' end
+    local lbl = GetModTextLabel(veh, modType, index)
+    if lbl and lbl ~= '' then
+        local nice = GetLabelText(lbl)
+        if nice and nice ~= 'NULL' then return nice end
+        return lbl
+    end
+    return ('Option %d'):format(index + 1)
+end
+
+local function captureVehicleAppearance(veh)
+    if not DoesEntityExist(veh) then return nil end
+    SetVehicleModKit(veh, 0)
+    local snap = { mods={}, wheelType=nil, windowTint=nil, colors={} }
+    local modTypes = {0,1,2,3,4,6,7,8,9,10,23,48}
+    for _, m in ipairs(modTypes) do snap.mods[m] = GetVehicleMod(veh, m) end
+    snap.wheelType = GetVehicleWheelType(veh) or 0
+    snap.windowTint = GetVehicleWindowTint(veh) or 0
+    local p,s = GetVehicleColours(veh)
+    local pearl,wheelCol = GetVehicleExtraColours(veh)
+    snap.colors.classic = {primary=p or 0, secondary=s or 0, pearl=pearl or 0, wheel=wheelCol or 0}
+    if GetIsVehiclePrimaryColourCustom(veh) then
+        local r,g,b = GetVehicleCustomPrimaryColour(veh)
+        snap.colors.customPrimary = {r=r,g=g,b=b}
+    end
+    if GetIsVehicleSecondaryColourCustom(veh) then
+        local r,g,b = GetVehicleCustomSecondaryColour(veh)
+        snap.colors.customSecondary = {r=r,g=g,b=b}
+    end
+    return snap
+end
+
+local function applySnapshot(veh, snap)
+    if not veh or not DoesEntityExist(veh) or not snap then return end
+    SetVehicleModKit(veh, 0)
+    if snap.wheelType then SetVehicleWheelType(veh, snap.wheelType) end
+    for m, idx in pairs(snap.mods) do SetVehicleMod(veh, m, idx, false) end
+    ClearVehicleCustomPrimaryColour(veh)
+    ClearVehicleCustomSecondaryColour(veh)
+    local c = snap.colors.classic or {primary=0,secondary=0,pearl=0,wheel=0}
+    SetVehicleColours(veh, c.primary, c.secondary)
+    SetVehicleExtraColours(veh, c.pearl, c.wheel)
+    if snap.colors.customPrimary then
+        SetVehicleCustomPrimaryColour(veh, snap.colors.customPrimary.r, snap.colors.customPrimary.g, snap.colors.customPrimary.b)
+    end
+    if snap.colors.customSecondary then
+        SetVehicleCustomSecondaryColour(veh, snap.colors.customSecondary.r, snap.colors.customSecondary.g, snap.colors.customSecondary.b)
+    end
+    if snap.windowTint then SetVehicleWindowTint(veh, snap.windowTint) end
+end
+
+-- Helper: Get color name by index and paintType (NOW GTA5PaintColors IS DEFINED)
+local function getColorName(paintType, index)
+    local list = GTA5PaintColors[paintType]
+    if not list then return tostring(index) end
+    for _, color in ipairs(list) do
+        if color.index == index then return color.name end
+    end
+    return tostring(index)
+end
+
+-- Helper: Get window tint name
+local function getTintName(idx)
+    local tintNames = {[0]='None',[1]='Pure Black',[2]='Dark Smoke',[3]='Light Smoke',[4]='Stock',[5]='Limo',[6]='Green'}
+    return tintNames[idx or 0] or tostring(idx)
+end
+
+-- Helper: Build a summary of all modifications done during preview
+local function buildModificationSummary(veh, before, after)
+    local changes = {}
+    -- Mods
+    for modType, oldIdx in pairs(before.mods or {}) do
+        local newIdx = (after.mods or {})[modType]
+        if newIdx ~= oldIdx then
+            local nameMap = {
+                [0]='Spoiler',[1]='Front Bumper',[2]='Rear Bumper',[3]='Side Skirts',
+                [4]='Exhaust',[6]='Grille',[7]='Hood',[8]='Fender',[9]='Right Fender',
+                [10]='Roof',[23]='Wheels',[48]='Livery'
+            }
+            local modName = nameMap[modType] or ('Mod '..modType)
+            local from = getModDisplayName(veh, modType, oldIdx)
+            local to = getModDisplayName(veh, modType, newIdx)
+            changes[#changes+1] = ('%s: %s → %s'):format(modName, from, to)
+        end
+    end
+
+    -- Colors (primary, secondary, pearl, wheel)
+    local function colorChange(label, which, paintTypeKey, bcol, acol)
+        local oldIdx = bcol or 0
+        local newIdx = acol or 0
+        if oldIdx ~= newIdx then
+            local paintType = (after.colors and after.colors[paintTypeKey]) or paintTypeKey or "classic"
+            local oldName = getColorName(paintType, oldIdx)
+            local newName = getColorName(paintType, newIdx)
+            changes[#changes+1] = ("%s: %s → %s"):format(label, oldName, newName)
+        end
+    end
+
+    local bcol, acol = before.colors.classic or {}, after.colors.classic or {}
+    colorChange("Primary Color", "primary", "primaryType", bcol.primary, acol.primary)
+    colorChange("Secondary Color", "secondary", "secondaryType", bcol.secondary, acol.secondary)
+    colorChange("Pearlescent", "pearl", "pearlType", bcol.pearl, acol.pearl)
+    colorChange("Wheel Color", "wheel", "wheelType", bcol.wheel, acol.wheel)
+
+    -- Custom colors (RGB)
+    local function rgbStr(rgb)
+        if not rgb then return "None" end
+        return ("RGB(%d,%d,%d)"):format(rgb.r or 0, rgb.g or 0, rgb.b or 0)
+    end
+    if (before.colors.customPrimary or false) ~= (after.colors.customPrimary or false) then
+        changes[#changes+1] = ("Primary Custom: %s → %s"):format(
+            rgbStr(before.colors.customPrimary), rgbStr(after.colors.customPrimary))
+    end
+    if (before.colors.customSecondary or false) ~= (after.colors.customSecondary or false) then
+        changes[#changes+1] = ("Secondary Custom: %s → %s"):format(
+            rgbStr(before.colors.customSecondary), rgbStr(after.colors.customSecondary))
+    end
+
+    -- Window tint
+    if before.windowTint ~= after.windowTint then
+        changes[#changes+1] = ("Window Tint: %s → %s"):format(
+            getTintName(before.windowTint), getTintName(after.windowTint)
+        )
+    end
+
+    return changes
+end
+
+local function endPreview(veh)
+    if not veh or not DoesEntityExist(veh) then return end
+    local sess = PreviewSessions[veh]
+    if not sess or not sess.active then return end
+    local before = sess.snapshot
+    local after = captureVehicleAppearance(veh)
+    applySnapshot(veh, before)
+    PreviewSessions[veh] = nil
+    pcall(function() TriggerEvent('qb-menu:client:closeMenu') end)
+    QBCore.Functions.Notify('Preview ended. Vehicle restored.', 'primary')
+    PreviewVeh = nil
+
+    -- Build summary and give preview receipt
+    local summary = buildModificationSummary(veh, before, after)
+    if #summary > 0 then
+        local desc = table.concat(summary, "\n")
+        TriggerServerEvent('pf_mech:giveModificationSheet', {
+            vehicle = GetDisplayNameFromVehicleModel(GetEntityModel(veh)),
+            plate = GetVehicleNumberPlateText(veh),
+            description = desc
+        })
+        QBCore.Functions.Notify('Preview Receipt given with all changes listed.', 'success')
+    end
+end
+
+local function ensurePreviewSession(veh)
+    if PreviewSessions[veh] and PreviewSessions[veh].active then return true end
+    local snap = captureVehicleAppearance(veh)
+    if not snap then return false end
+    PreviewSessions[veh] = { active = true, snapshot = snap }
+    PreviewVeh = veh
+    CreateThread(function()
+        local ped = PlayerPedId()
+        while PreviewSessions[veh] and PreviewSessions[veh].active do
+            if IsControlJustReleased(0,322) or IsControlJustReleased(0,177) or IsControlJustReleased(0,200) then
+                endPreview(veh); break
+            end
+            if not IsPedInAnyVehicle(ped,false) or GetVehiclePedIsIn(ped,false) ~= veh or GetPedInVehicleSeat(veh,-1) ~= ped then
+                endPreview(veh); break
+            end
+            Wait(120)
+        end
+    end)
+    return true
+end
+
+local function buildModList(veh, modType)
+    local list = {}
+    SetVehicleModKit(veh,0)
+    local count = GetNumVehicleMods(veh, modType) or 0
+    list[#list+1] = { label = getModDisplayName(veh, modType, -1), index = -1 }
+    for i=0,count-1 do
+        list[#list+1] = { label = getModDisplayName(veh, modType, i), index = i }
+    end
+    return list
+end
+
+local function OpenQBMenu(entries)
+    local ok = false
+    local success = pcall(function()
+        if exports and exports['qb-menu'] and exports['qb-menu'].openMenu then
+            exports['qb-menu']:openMenu(entries); ok = true
+        end
+    end)
+    if not success or not ok then TriggerEvent('qb-menu:client:openMenu', entries); ok = true end
+    return ok
+end
+
+local function openModMenu(veh, label, modType)
+    local m = { { header = label, isMenuHeader = true }, }
+    for _, it in ipairs(buildModList(veh, modType)) do
+        m[#m+1] = {
+            header = it.label, shouldClose = false,
+            params = { event='pf_mech:preview:setMod', args={ modType=modType, index=it.index, label=label } }
+        }
+    end
+    m[#m+1] = { header='Back', params={ event='pf_mech:preview:openMain' } }
+    OpenQBMenu(m)
+end
+
+local function openTintMenu(veh)
+    local m = { { header='Window Tint', isMenuHeader=true } }
+    for _,t in ipairs(WindowTints) do
+        m[#m+1] = {
+            header=t.label, shouldClose=false,
+            params={ event='pf_mech:preview:setTint', args={ tint=t.val } }
+        }
+    end
+    m[#m+1] = { header='Back', params={ event='pf_mech:preview:openMain' } }
+    OpenQBMenu(m)
+end
+
 -- Show paint categories when clicking a color option (primary, secondary, etc)
 local function openPaintCategoryMenu(veh, which)
     local menu = {
@@ -357,7 +353,20 @@ local function openPaintColorListMenu(veh, which, paintType)
     OpenQBMenu(menu)
 end
 
--- Apply selected color to vehicle
+-- Event handlers
+RegisterNetEvent('pf_mech:preview:setMod', function(d)
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    SetVehicleModKit(PreviewVeh, 0)
+    SetVehicleMod(PreviewVeh, d.modType, d.index or -1, false)
+    SetTimeout(40, function() openModMenu(PreviewVeh, d.label or 'Mod', d.modType) end)
+end)
+
+RegisterNetEvent('pf_mech:preview:setTint', function(d)
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    SetVehicleWindowTint(PreviewVeh, d.tint or 0)
+    SetTimeout(40, function() openTintMenu(PreviewVeh) end)
+end)
+
 RegisterNetEvent("pf_mech:preview:applyPaintColor", function(d)
     if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
     SetVehicleModKit(PreviewVeh, 0)
@@ -374,25 +383,19 @@ RegisterNetEvent("pf_mech:preview:applyPaintColor", function(d)
         local pearl, _ = GetVehicleExtraColours(PreviewVeh)
         SetVehicleExtraColours(PreviewVeh, pearl, d.index)
     end
-    -- Reopen color list for further selection
-    SetTimeout(40, function()
-        openPaintColorListMenu(PreviewVeh, d.which, d.paintType)
-    end)
+    SetTimeout(40, function() openPaintColorListMenu(PreviewVeh, d.which, d.paintType) end)
 end)
 
--- Event to open paint category menu
 RegisterNetEvent("pf_mech:preview:openPaintCategory", function(d)
     if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
     openPaintCategoryMenu(PreviewVeh, d.which)
 end)
 
--- Event to open color list for a paint type
 RegisterNetEvent("pf_mech:preview:openPaintColorList", function(d)
     if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
     openPaintColorListMenu(PreviewVeh, d.which, d.paintType)
 end)
 
--- Update openPaintJobs to use new color flow
 RegisterNetEvent('pf_mech:preview:openPaintJobs', function()
     if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
     local menu = {
@@ -406,7 +409,21 @@ RegisterNetEvent('pf_mech:preview:openPaintJobs', function()
     OpenQBMenu(menu)
 end)
 
--- Update openMain to keep Paint Jobs button
+RegisterNetEvent('pf_mech:preview:openMod', function(d)
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    openModMenu(PreviewVeh, d.label or 'Mod', d.modType)
+end)
+
+RegisterNetEvent('pf_mech:preview:openTint', function()
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    openTintMenu(PreviewVeh)
+end)
+
+RegisterNetEvent('pf_mech:preview:end', function()
+    if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
+    endPreview(PreviewVeh)
+end)
+
 RegisterNetEvent('pf_mech:preview:openMain', function()
     local ped = PlayerPedId()
     local veh = PreviewVeh or GetVehiclePedIsIn(ped,false)
@@ -430,13 +447,12 @@ RegisterNetEvent('pf_mech:preview:openMain', function()
         { header='Livery',         txt='Preview livery',          params={ event='pf_mech:preview:openMod', args={ label='Livery', modType=48 } } },
         { header='Wheels',         txt='Preview wheels',          params={ event='pf_mech:preview:openMod', args={ label='Wheels', modType=23 } } },
         { header='Paint Jobs',     txt='Preview paint colors',    params={ event='pf_mech:preview:openPaintJobs' } },
-        { header='Window Tint',     txt='Preview tint levels', params={ event='pf_mech:preview:openTint' } },
-        { header='Close & Revert',  txt='Exit without saving', params={ event='pf_mech:preview:end' } },
+        { header='Window Tint',    txt='Preview tint levels',     params={ event='pf_mech:preview:openTint' } },
+        { header='Close & Revert', txt='Exit without saving',     params={ event='pf_mech:preview:end' } },
     }
     OpenQBMenu(menu)
 end)
 
--- Command
 RegisterCommand('preview', function()
     if Config.MenuSystem ~= 'qb-menu' then QBCore.Functions.Notify('Preview requires qb-menu', 'error'); return end
     if not isMechanicJob() then QBCore.Functions.Notify('Not authorized', 'error'); return end
@@ -444,10 +460,7 @@ RegisterCommand('preview', function()
     if not IsPedInAnyVehicle(ped,false) then QBCore.Functions.Notify('Enter a vehicle first', 'error'); return end
     local veh = GetVehiclePedIsIn(ped,false)
     if GetPedInVehicleSeat(veh,-1) ~= ped then QBCore.Functions.Notify('Driver seat required', 'error'); return end
-    if not ensureControl or (ensureControl and not ensureControl(veh)) then
-        -- fallback control attempt
-        NetworkRequestControlOfEntity(veh)
-    end
+    NetworkRequestControlOfEntity(veh)
     if not ensurePreviewSession(veh) then QBCore.Functions.Notify('Preview init failed', 'error'); return end
     TriggerEvent('pf_mech:preview:openMain')
     QBCore.Functions.Notify('Preview started. Changes will not be saved.', 'primary')
