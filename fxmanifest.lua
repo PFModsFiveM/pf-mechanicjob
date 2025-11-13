@@ -22,7 +22,13 @@ files {
 shared_scripts {
   '@ox_lib/init.lua',             -- NEW: load ox_lib to get the `lib` global
   '@qb-core/shared/locale.lua',
-  'config.lua'
+  'config.lua',
+  'shared/locale.lua',  -- NEW: Load locale system first
+  'locales/en.lua',
+  'locales/pl.lua',
+  'locales/es.lua',
+  'locales/fr.lua',
+  'locales/de.lua'       -- NEW: Load all locale files
 }
 
 client_scripts {
@@ -32,7 +38,9 @@ client_scripts {
   'client/main.lua',
   'client/minigames.lua',
   'client/cosmetics.lua',
-  'client/garage_sync.lua'  -- NEW
+  'client/garage_sync.lua',  -- NEW
+  'client/mileage_hud.lua',  -- NEW
+  'client/rolling_coal.lua'  -- NEW: Rolling coal visual effects
 }
 
 server_scripts {

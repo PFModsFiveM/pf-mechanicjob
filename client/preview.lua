@@ -401,33 +401,33 @@ local function openModMenu(veh, label, modType)
             params = { event='pf_mech:preview:setMod', args={ modType=modType, index=it.index, label=label } }
         }
     end
-    m[#m+1] = { header='Back', params={ event='pf_mech:preview:openMain' } }
+    m[#m+1] = { header=L('menu_back'), params={ event='pf_mech:preview:openMain' } }
     OpenQBMenu(m)
 end
 
 local function openTintMenu(veh)
-    local m = { { header='Window Tint', isMenuHeader=true } }
+    local m = { { header=L('mod_window_tint'), isMenuHeader=true } }
     for _,t in ipairs(WindowTints) do
         m[#m+1] = {
             header=t.label, shouldClose=false,
             params={ event='pf_mech:preview:setTint', args={ tint=t.val } }
         }
     end
-    m[#m+1] = { header='Back', params={ event='pf_mech:preview:openMain' } }
+    m[#m+1] = { header=L('menu_back'), params={ event='pf_mech:preview:openMain' } }
     OpenQBMenu(m)
 end
 
 -- Show paint categories when clicking a color option (primary, secondary, etc)
 local function openPaintCategoryMenu(veh, which)
     local menu = {
-        { header = (which:gsub("^%l", string.upper)) .. " Paint Type", isMenuHeader = true },
-        { header = "Classic",    params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "classic" } } },
-        { header = "Metallic",   params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "metallic" } } },
-        { header = "Matte",      params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "matte" } } },
-        { header = "Metals",     params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "metals" } } },
-        { header = "Util",       params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "util" } } },
-        { header = "Chameleon",  params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "chameleon" } } },
-        { header = "Back",       params = { event = "pf_mech:preview:openPaintJobs" } }
+        { header = (which:gsub("^%l", string.upper)) .. " " .. L('paint_type'), isMenuHeader = true },
+        { header = L('paint_classic'),    params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "classic" } } },
+        { header = L('paint_metallic'),   params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "metallic" } } },
+        { header = L('paint_matte'),      params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "matte" } } },
+        { header = L('paint_metals'),     params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "metals" } } },
+        { header = L('paint_util'),       params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "util" } } },
+        { header = L('paint_chameleon'),  params = { event = "pf_mech:preview:openPaintColorList", args = { which = which, paintType = "chameleon" } } },
+        { header = L('menu_back'),        params = { event = "pf_mech:preview:openPaintJobs" } }
     }
     OpenQBMenu(menu)
 end
@@ -436,7 +436,7 @@ end
 local function openPaintColorListMenu(veh, which, paintType)
     local colors = GTA5PaintColors[paintType] or {}
     local menu = {
-        { header = ("%s - %s Colors"):format(which:gsub("^%l", string.upper), paintType:gsub("^%l", string.upper)), isMenuHeader = true }
+        { header = ("%s - %s"):format(which:gsub("^%l", string.upper), L('paint_'..paintType)), isMenuHeader = true }
     }
     for _, color in ipairs(colors) do
         menu[#menu+1] = {
@@ -444,7 +444,7 @@ local function openPaintColorListMenu(veh, which, paintType)
             params = { event = "pf_mech:preview:applyPaintColor", args = { which = which, paintType = paintType, index = color.index } }
         }
     end
-    menu[#menu+1] = { header = "Back", params = { event = "pf_mech:preview:openPaintCategory", args = { which = which } } }
+    menu[#menu+1] = { header = L('menu_back'), params = { event = "pf_mech:preview:openPaintCategory", args = { which = which } } }
     OpenQBMenu(menu)
 end
 
@@ -509,12 +509,12 @@ end)
 RegisterNetEvent('pf_mech:preview:openPaintJobs', function()
     if not PreviewVeh or not DoesEntityExist(PreviewVeh) then return end
     local menu = {
-        { header = 'Paint Jobs', isMenuHeader = true },
-        { header = 'Primary Color',    params = { event = 'pf_mech:preview:openPaintCategory', args = { which = 'primary' } } },
-        { header = 'Secondary Color',  params = { event = 'pf_mech:preview:openPaintCategory', args = { which = 'secondary' } } },
-        { header = 'Pearlescent',      params = { event = 'pf_mech:preview:openPaintCategory', args = { which = 'pearl' } } },
-        { header = 'Wheel Color',      params = { event = 'pf_mech:preview:openPaintCategory', args = { which = 'wheel' } } },
-        { header = 'Back',             params = { event = 'pf_mech:preview:openMain' } }
+        { header = L('menu_paint'), isMenuHeader = true },
+        { header = L('color_primary'),    params = { event = 'pf_mech:preview:openPaintCategory', args = { which = 'primary' } } },
+        { header = L('color_secondary'),  params = { event = 'pf_mech:preview:openPaintCategory', args = { which = 'secondary' } } },
+        { header = L('color_pearlescent'),params = { event = 'pf_mech:preview:openPaintCategory', args = { which = 'pearl' } } },
+        { header = L('color_wheel'),      params = { event = 'pf_mech:preview:openPaintCategory', args = { which = 'wheel' } } },
+        { header = L('menu_back'),        params = { event = 'pf_mech:preview:openMain' } }
     }
     OpenQBMenu(menu)
 end)
@@ -539,39 +539,54 @@ RegisterNetEvent('pf_mech:preview:openMain', function()
     local veh = PreviewVeh or GetVehiclePedIsIn(ped,false)
     if not veh or veh == 0 then return end
     if Config.MenuSystem ~= 'qb-menu' then
-        QBCore.Functions.Notify('Preview requires qb-menu', 'error')
+        QBCore.Functions.Notify(L('preview_requires_qbmenu'), 'error')
         return
     end
     local menu = {
-        { header='Preview Cosmetics', isMenuHeader=true },
-        { header='Spoiler',        txt='Preview spoilers',        params={ event='pf_mech:preview:openMod', args={ label='Spoiler', modType=0 } } },
-        { header='Front Bumper',   txt='Preview front bumpers',   params={ event='pf_mech:preview:openMod', args={ label='Front Bumper', modType=1 } } },
-        { header='Rear Bumper',    txt='Preview rear bumpers',    params={ event='pf_mech:preview:openMod', args={ label='Rear Bumper', modType=2 } } },
-        { header='Side Skirts',    txt='Preview skirts',          params={ event='pf_mech:preview:openMod', args={ label='Side Skirts', modType=3 } } },
-        { header='Exhaust',        txt='Preview exhausts',        params={ event='pf_mech:preview:openMod', args={ label='Exhaust', modType=4 } } },
-        { header='Grille',         txt='Preview grilles',         params={ event='pf_mech:preview:openMod', args={ label='Grille', modType=6 } } },
-        { header='Hood',           txt='Preview hoods',           params={ event='pf_mech:preview:openMod', args={ label='Hood', modType=7 } } },
-        { header='Fenders',        txt='Preview fenders',         params={ event='pf_mech:preview:openMod', args={ label='Fenders', modType=8 } } },
-        { header='Right Fender',   txt='Preview right fenders',   params={ event='pf_mech:preview:openMod', args={ label='Right Fender', modType=9 } } },
-        { header='Roof',           txt='Preview roofs',           params={ event='pf_mech:preview:openMod', args={ label='Roof', modType=10 } } },
-        { header='Livery',         txt='Preview livery',          params={ event='pf_mech:preview:openMod', args={ label='Livery', modType=48 } } },
-        { header='Wheels',         txt='Preview wheels',          params={ event='pf_mech:preview:openMod', args={ label='Wheels', modType=23 } } },
-        { header='Paint Jobs',     txt='Preview paint colors',    params={ event='pf_mech:preview:openPaintJobs' } },
-        { header='Window Tint',    txt='Preview tint levels',     params={ event='pf_mech:preview:openTint' } },
-        { header='Close & Revert', txt='Exit without saving',     params={ event='pf_mech:preview:end' } },
+        { header=L('menu_preview'), isMenuHeader=true },
+        { header=L('mod_spoiler'),        txt=L('preview_desc'),        params={ event='pf_mech:preview:openMod', args={ label=L('mod_spoiler'), modType=0 } } },
+        { header=L('mod_front_bumper'),   txt=L('preview_desc'),   params={ event='pf_mech:preview:openMod', args={ label=L('mod_front_bumper'), modType=1 } } },
+        { header=L('mod_rear_bumper'),    txt=L('preview_desc'),    params={ event='pf_mech:preview:openMod', args={ label=L('mod_rear_bumper'), modType=2 } } },
+        { header=L('mod_side_skirt'),     txt=L('preview_desc'),          params={ event='pf_mech:preview:openMod', args={ label=L('mod_side_skirt'), modType=3 } } },
+        { header=L('mod_exhaust'),        txt=L('preview_desc'),        params={ event='pf_mech:preview:openMod', args={ label=L('mod_exhaust'), modType=4 } } },
+        { header=L('mod_grille'),         txt=L('preview_desc'),         params={ event='pf_mech:preview:openMod', args={ label=L('mod_grille'), modType=6 } } },
+        { header=L('mod_hood'),           txt=L('preview_desc'),           params={ event='pf_mech:preview:openMod', args={ label=L('mod_hood'), modType=7 } } },
+        { header=L('mod_fenders'),        txt=L('preview_desc'),         params={ event='pf_mech:preview:openMod', args={ label=L('mod_fenders'), modType=8 } } },
+        { header=L('mod_right_fender'),   txt=L('preview_desc'),   params={ event='pf_mech:preview:openMod', args={ label=L('mod_right_fender'), modType=9 } } },
+        { header=L('mod_roof'),           txt=L('preview_desc'),           params={ event='pf_mech:preview:openMod', args={ label=L('mod_roof'), modType=10 } } },
+        { header=L('mod_livery'),         txt=L('preview_desc'),          params={ event='pf_mech:preview:openMod', args={ label=L('mod_livery'), modType=48 } } },
+        { header=L('mod_wheels'),         txt=L('preview_desc'),          params={ event='pf_mech:preview:openMod', args={ label=L('mod_wheels'), modType=23 } } },
+        { header=L('menu_paint'),         txt=L('preview_paint_desc'),    params={ event='pf_mech:preview:openPaintJobs' } },
+        { header=L('mod_window_tint'),    txt=L('preview_tint_desc'),     params={ event='pf_mech:preview:openTint' } },
+        { header=L('preview_close_revert'), txt=L('preview_exit_desc'),     params={ event='pf_mech:preview:end' } },
     }
     OpenQBMenu(menu)
 end)
 
 RegisterCommand('preview', function()
-    if Config.MenuSystem ~= 'qb-menu' then QBCore.Functions.Notify('Preview requires qb-menu', 'error'); return end
-    if not isMechanicJob() then QBCore.Functions.Notify('Not authorized', 'error'); return end
+    if Config.MenuSystem ~= 'qb-menu' then 
+        QBCore.Functions.Notify(L('preview_requires_qbmenu'), 'error')
+        return 
+    end
+    if not isMechanicJob() then 
+        QBCore.Functions.Notify(L('not_mechanic'), 'error')
+        return 
+    end
     local ped = PlayerPedId()
-    if not IsPedInAnyVehicle(ped,false) then QBCore.Functions.Notify('Enter a vehicle first', 'error'); return end
+    if not IsPedInAnyVehicle(ped,false) then 
+        QBCore.Functions.Notify(L('not_in_vehicle'), 'error')
+        return 
+    end
     local veh = GetVehiclePedIsIn(ped,false)
-    if GetPedInVehicleSeat(veh,-1) ~= ped then QBCore.Functions.Notify('Driver seat required', 'error'); return end
+    if GetPedInVehicleSeat(veh,-1) ~= ped then 
+        QBCore.Functions.Notify(L('driver_seat_required'), 'error')
+        return 
+    end
     NetworkRequestControlOfEntity(veh)
-    if not ensurePreviewSession(veh) then QBCore.Functions.Notify('Preview init failed', 'error'); return end
+    if not ensurePreviewSession(veh) then 
+        QBCore.Functions.Notify(L('preview_init_failed'), 'error')
+        return 
+    end
     TriggerEvent('pf_mech:preview:openMain')
-    QBCore.Functions.Notify('Preview started. Changes will not be saved.', 'primary')
+    QBCore.Functions.Notify(L('preview_started'), 'primary')
 end, false)

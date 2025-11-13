@@ -12,7 +12,7 @@ end
 local function hasToolbox(callback)
     QBCore.Functions.TriggerCallback('pf_mech:hasToolbox', function(has)
         if not has then
-            QBCore.Functions.Notify('You need a toolbox to do mechanic work!', 'error')
+            QBCore.Functions.Notify(L('need_toolbox'), 'error')
         end
         callback(has)
     end)
@@ -48,7 +48,7 @@ RegisterNetEvent('pf-mechanicjob:client:useMechTablet', function()
     if isPlayerMechanic() then
         TriggerEvent('pf_mech:openTablet')
     else
-        QBCore.Functions.Notify('You are not a mechanic!', 'error')
+        QBCore.Functions.Notify(L('not_mechanic'), 'error')
     end
 end)
 
@@ -423,21 +423,36 @@ local DiagnosticLabels = {
 }
 
 RegisterCommand('scanveh', function()
-  local veh = nearbyVeh(6.0); if veh == 0 then return TriggerEvent('QBCore:Notify','No vehicle nearby','error') end
+  local veh = nearbyVeh(6.0); if veh == 0 then return TriggerEvent('QBCore:Notify',L('no_vehicle'),'error') end
   if isNPCVeh(veh) then
     local id = Entity(veh).state.pf_jobId
     QBCore.Functions.TriggerCallback('pf_mech:job:getInfo', function(job)
-      if not job then return TriggerEvent('QBCore:Notify','No job info','error') end
+      if not job then return TriggerEvent('QBCore:Notify',L('no_diagnostics'),'error') end
       local rows = {}
       for _, p in ipairs(job.required_parts or {}) do
         local done = tonumber((job.installed_parts or {})[p.id] or 0)
         local need = math.max(0, (tonumber(p.qty) or 1) - done)
         local tag = need <= 0 and '✓' or ('x'..need)
-        rows[#rows+1] = { header = (p.id:gsub('_',' '):gsub('%f[%w].', string.upper)), txt = ('Need: %s  •  Installed: %d'):format(tag, done), params = {} }
+        local partLabel = L('part_'..p.id) or p.id:gsub('_',' '):gsub('%f[%w].', string.upper)
+        rows[#rows+1] = { 
+            header = partLabel, 
+            txt = (L('diagnostics_need')..': %s  •  '..L('diagnostics_installed')..': %d'):format(tag, done), 
+            params = {} 
+        }
       end
-      if job.paint_req then rows[#rows+1] = { header = 'Paint', txt = ('Color: %s'):format(job.paint_req), params = {} } end
-      rows[#rows+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
-      table.insert(rows, 1, { header = ('NPC Job • %s'):format(job.plate or 'Unknown'), isMenuHeader=true, params = {} })
+      if job.paint_req then 
+        rows[#rows+1] = { 
+            header = L('menu_paint'), 
+            txt = (L('color_primary')..': %s'):format(job.paint_req), 
+            params = {} 
+        } 
+      end
+      rows[#rows+1] = { header=L('menu_close'), params={ event='qb-menu:client:closeMenu' } }
+      table.insert(rows, 1, { 
+        header = (L('diagnostics_npc_job')..' • %s'):format(job.plate or 'Unknown'), 
+        isMenuHeader=true, 
+        params = {} 
+      })
       exports['qb-menu']:openMenu(rows)
     end, id)
   else
@@ -446,10 +461,10 @@ RegisterCommand('scanveh', function()
     local eng = math.max(0, math.min(100, math.floor(GetVehicleEngineHealth(veh)/10)))
     local body= math.max(0, math.min(100, math.floor(GetVehicleBodyHealth(veh)/10)))
     local menu = {
-      { header = name, txt = ('Plate: %s'):format(plate or 'N/A'), isMenuHeader = true, params = {} },
-      { header = ('Engine - %d%%'):format(eng), txt = 'Health', params = {} },
-      { header = ('Body - %d%%'):format(body), txt = 'Health', params = {} },
-      { header = 'Close', params = { event='qb-menu:client:closeMenu' } }
+      { header = name, txt = (L('diagnostics_plate')..': %s'):format(plate or 'N/A'), isMenuHeader = true, params = {} },
+      { header = (L('part_engine')..' - %d%%'):format(eng), txt = L('diagnostics_health'), params = {} },
+      { header = (L('part_body')..' - %d%%'):format(body), txt = L('diagnostics_health'), params = {} },
+      { header = L('menu_close'), params = { event='qb-menu:client:closeMenu' } }
     }
     exports['qb-menu']:openMenu(menu)
   end
@@ -990,3 +1005,194 @@ RegisterNetEvent('pf-mechanicjob:client:usePart', function(item)
         QBCore.Functions.Notify('Invalid mod type', 'error')
     end
 end)
+
+-- ============================================================================
+-- ROLLING COAL SYSTEM
+-- ============================================================================
+
+-- Track coal delete state per vehicle
+local CoalVehicles = {} -- [plate] = true/false
+
+-- Helper: Get normalized plate
+local function GetPlate(veh)
+    if not veh or not DoesEntityExist(veh) then return nil end
+    return GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+end
+
+-- Helper: Check if coal is enabled for vehicle
+local function IsCoalEnabled(veh)
+    if not Config.RollingCoal.enabled then return false end
+    if not Config.IsDieselCandidate(veh) then return false end
+    
+    local plate = GetPlate(veh)
+    if not plate then return false end
+    
+    return CoalVehicles[plate] == true
+end
+
+-- Sync coal state from server
+RegisterNetEvent('pf_mech:syncCoalDelete', function(plate, enabled)
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then return end
+    
+    CoalVehicles[plate] = enabled
+    
+    if Config.Debug then
+        print(string.format('[COAL] Synced %s: %s', plate, tostring(enabled)))
+    end
+end)
+
+-- Load coal state when entering vehicle
+CreateThread(function()
+    local lastVehicle = 0
+    
+    while true do
+        Wait(1000)
+        
+        local ped = PlayerPedId()
+        if IsPedInAnyVehicle(ped, false) then
+            local veh = GetVehiclePedIsIn(ped, false)
+            
+            if veh ~= 0 and veh ~= lastVehicle then
+                lastVehicle = veh
+                local plate = GetPlate(veh)
+                
+                if plate and CoalVehicles[plate] == nil then
+                    -- Load state from server
+                    QBCore.Functions.TriggerCallback('pf_mech:getCoalState', function(enabled)
+                        CoalVehicles[plate] = enabled
+                    end, plate)
+                end
+            end
+        else
+            lastVehicle = 0
+        end
+    end
+end)
+
+-- Add coal delete toggle to mechanic tools menu
+-- This integrates with your existing tools_menu.lua export
+RegisterNetEvent('pf_mech:toggleCoalDelete', function()
+    local ped = PlayerPedId()
+    local veh = GetVehiclePedIsIn(ped, false)
+    
+    if veh == 0 then
+        QBCore.Functions.Notify('You must be in a vehicle', 'error')
+        return
+    end
+    
+    if not Config.IsDieselCandidate(veh) then
+        QBCore.Functions.Notify('This vehicle is not a diesel', 'error')
+        return
+    end
+    
+    local plate = GetPlate(veh)
+    if not plate then return end
+    
+    local currentState = CoalVehicles[plate] or false
+    local newState = not currentState
+    
+    -- NEW: Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+        
+        if not DoProgress('Installing coal delete...', 8000, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+            QBCore.Functions.Notify('Installation cancelled', 'error')
+            return
+        end
+        
+        TriggerServerEvent('pf_mech:setCoalDelete', plate, newState)
+        
+        QBCore.Functions.Notify(
+            newState and '🚛 Coal delete installed - rolling coal enabled!' or '🚛 Coal delete removed',
+            newState and 'success' or 'primary',
+            5000
+        )
+    end)
+end)
+
+-- NEW: Toggle coal delete on nearby vehicle (works outside vehicle)
+RegisterNetEvent('pf_mech:toggleCoalDeleteNearby', function(data)
+    local veh = data.vehicle
+    local plate = data.plate
+    
+    if not veh or veh == 0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('Vehicle not found', 'error')
+        return
+    end
+    
+    if not Config.IsDieselCandidate(veh) then
+        QBCore.Functions.Notify('This vehicle is not a diesel', 'error')
+        return
+    end
+    
+    local currentState = CoalVehicles[plate] or false
+    local newState = not currentState
+    
+    -- Check for toolbox
+    hasToolbox(function(has)
+        if not has then return end
+        
+        if not DoProgress('Installing coal delete...', 8000, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+            QBCore.Functions.Notify('Installation cancelled', 'error')
+            return
+        end
+        
+        TriggerServerEvent('pf_mech:setCoalDelete', plate, newState)
+        
+        QBCore.Functions.Notify(
+            newState and '🚛 Coal delete installed - rolling coal enabled!' or '🚛 Coal delete removed',
+            newState and 'success' or 'primary',
+            5000
+        )
+    end)
+end)
+
+-- DEBUG: Test coal system (if Config.Debug)
+if Config.Debug then
+    RegisterCommand('coalstatus', function()
+        local ped = PlayerPedId()
+        local veh = GetVehiclePedIsIn(ped, false)
+        
+        if veh == 0 then
+            veh = nearbyVeh(6.0)
+        end
+        
+        if veh == 0 then
+            print('[COAL DEBUG] No vehicle')
+            return
+        end
+        
+        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+        local isDiesel = Config.IsDieselCandidate(veh)
+        local coalEnabled = CoalVehicles[plate] or false
+        
+        print(string.format('[COAL DEBUG] Plate: %s | Diesel: %s | Coal Enabled: %s', 
+            plate, tostring(isDiesel), tostring(coalEnabled)))
+        
+        QBCore.Functions.Notify(string.format('Diesel: %s | Coal: %s', 
+            tostring(isDiesel), tostring(coalEnabled)), 'primary', 5000)
+    end, false)
+    
+    RegisterCommand('coalforce', function(_, args)
+        local ped = PlayerPedId()
+        local veh = GetVehiclePedIsIn(ped, false)
+        
+        if veh == 0 then
+            veh = nearbyVeh(6.0)
+        end
+        
+        if veh == 0 then
+            print('[COAL DEBUG] No vehicle')
+            return
+        end
+        
+        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+        local enable = args[1] == 'true' or args[1] == '1'
+        
+        CoalVehicles[plate] = enable
+        
+        print(string.format('[COAL DEBUG] Force set %s to %s', plate, tostring(enable)))
+        QBCore.Functions.Notify(string.format('Coal forced: %s', tostring(enable)), 'success', 3000)
+    end, false)
+end

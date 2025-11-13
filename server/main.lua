@@ -1105,3 +1105,128 @@ RegisterNetEvent('pf_mech:giveModificationSheet', function(data)
     TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], 'add', 1)
 end)
 
+-- ============================================================================
+-- ROLLING COAL SYSTEM
+-- ============================================================================
+
+-- Set coal delete state for a vehicle
+RegisterNetEvent('pf_mech:setCoalDelete', function(plate, enabled)
+    local src = source
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then return end
+    
+    -- Verify player owns this vehicle
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    
+    local result = MySQL.single.await('SELECT citizenid FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
+    if not result or result.citizenid ~= Player.PlayerData.citizenid then
+        TriggerClientEvent('QBCore:Notify', src, 'You do not own this vehicle', 'error')
+        return
+    end
+    
+    -- Update database (store in mods JSON)
+    MySQL.update.await([[
+        UPDATE player_vehicles 
+        SET mods = JSON_SET(COALESCE(mods, '{}'), '$.coalDelete', ?)
+        WHERE plate = ?
+    ]], { enabled and true or false, plate })
+    
+    -- Broadcast to all clients (so they see the smoke)
+    TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, enabled)
+    
+    if Config.Debug then
+        print(string.format('[COAL] %s coal delete %s for %s', 
+            Player.PlayerData.name, 
+            enabled and 'enabled' or 'disabled', 
+            plate))
+    end
+end)
+
+-- Load coal delete state on vehicle spawn
+QBCore.Functions.CreateCallback('pf_mech:getCoalState', function(source, cb, plate)
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then cb(false); return end
+    
+    local result = MySQL.single.await('SELECT mods FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
+    
+    if result and result.mods then
+        local mods = json.decode(result.mods)
+        cb(mods and mods.coalDelete or false)
+    else
+        cb(false)
+    end
+end)
+
+-- ============================================================================
+-- ROLLING COAL SYSTEM (SERVER SYNC)
+-- ============================================================================
+
+-- Sync coal particles to all clients
+RegisterNetEvent('pf_mech:coal:syncStart', function(netId)
+    TriggerClientEvent('pf_mech:coal:startParticles', -1, netId)
+end)
+
+RegisterNetEvent('pf_mech:coal:syncStop', function(netId)
+    TriggerClientEvent('pf_mech:coal:stopParticles', -1, netId)
+end)
+
+-- Set coal delete state for a vehicle
+RegisterNetEvent('pf_mech:setCoalDelete', function(plate, enabled)
+    local src = source
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then return end
+    
+    -- Verify player owns this vehicle
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    
+    local result = MySQL.single.await('SELECT citizenid FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
+    if not result or result.citizenid ~= Player.PlayerData.citizenid then
+        TriggerClientEvent('QBCore:Notify', src, 'You do not own this vehicle', 'error')
+        return
+    end
+    
+    -- Update database (store in mods JSON)
+    MySQL.update.await([[
+        UPDATE player_vehicles 
+        SET mods = JSON_SET(COALESCE(mods, '{}'), '$.coalDelete', ?)
+        WHERE plate = ?
+    ]], { enabled and true or false, plate })
+    
+    -- Broadcast to all clients (so they see the smoke)
+    TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, enabled)
+    
+    if Config.Debug then
+        print(string.format('[COAL] %s coal delete %s for %s', 
+            Player.PlayerData.name, 
+            enabled and 'enabled' or 'disabled', 
+            plate))
+    end
+end)
+
+-- Load coal delete state on vehicle spawn
+QBCore.Functions.CreateCallback('pf_mech:getCoalState', function(source, cb, plate)
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then cb(false); return end
+    
+    local result = MySQL.single.await('SELECT mods FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
+    
+    if result and result.mods then
+        local mods = json.decode(result.mods)
+        cb(mods and mods.coalDelete or false)
+    else
+        cb(false)
+    end
+end)
+
+RegisterServerEvent("Smoke:SyncStartParticles")
+AddEventHandler("Smoke:SyncStartParticles", function(carid)
+    TriggerClientEvent("Smoke:StartParticles", -1, carid)
+end)
+
+RegisterServerEvent("Smoke:SyncStopParticles")
+AddEventHandler("Smoke:SyncStopParticles", function(carid)
+    TriggerClientEvent("Smoke:StopParticles", -1, carid)
+end)
+

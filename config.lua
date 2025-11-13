@@ -1,6 +1,11 @@
 Config = Config or {}
 
 -- ============================================================================
+-- LOCALE SYSTEM
+-- ============================================================================
+Config.Locale = 'en' -- Available: en, pl, es, fr, de (add more in locales folder)
+
+-- ============================================================================
 -- DEBUG (ALWAYS ON TOP)
 -- ============================================================================
 Config.Debug = true -- Set to true to see all debug notifications and console logs
@@ -285,3 +290,183 @@ Config.PreviewReceipt = {
     renderMenu = true,                  -- NEW: when using the item, open qb-menu showing changes
     menuTitle = 'Preview Receipt'       -- NEW: qb-menu title
 }
+
+-- ============================================================================
+-- ROLLING COAL SYSTEM
+-- ============================================================================
+Config.RollingCoal = {
+    enabled = true,
+    DieselClasses = { 10, 11, 12, 17, 19, 20 },
+    
+    -- Always diesel (even if class doesn't match)
+    ForceDieselModels = {
+        -- Trucks
+        [`bison`] = true,
+        [`bison2`] = true,
+        [`bison3`] = true,
+        [`bobcatxl`] = true,
+        [`bobcat`] = true,
+        [`sadler`] = true,
+        [`sadler2`] = true,
+        [`sandking`] = true,
+        [`sandking2`] = true,
+        [`rebel`] = true,
+        [`rebel2`] = true,
+        [`riata`] = true,
+        [`caracara`] = true,
+        [`caracara2`] = true,
+        [`dloader`] = true,
+        [`guardian`] = true,
+        [`kamacho`] = true,
+        [`dubsta`] = true,
+        [`dubsta2`] = true,
+        [`dubsta3`] = true,
+        [`granger`] = true,
+        [`granger2`] = true,
+        
+        -- Vans & Commercial
+        [`boxville`] = true,
+        [`boxville2`] = true,
+        [`boxville3`] = true,
+        [`boxville4`] = true,
+        [`boxville5`] = true,
+        [`burrito`] = true,
+        [`burrito2`] = true,
+        [`burrito3`] = true,
+        [`burrito4`] = true,
+        [`burrito5`] = true,
+        [`camper`] = true,
+        [`journey`] = true,
+        [`minivan`] = true,
+        [`minivan2`] = true,
+        [`rumpo`] = true,
+        [`rumpo2`] = true,
+        [`rumpo3`] = true,
+        [`youga`] = true,
+        [`youga2`] = true,
+        [`youga3`] = true,
+        [`gburrito`] = true,
+        [`gburrito2`] = true,
+        [`paradise`] = true,
+        [`speedo`] = true,
+        [`speedo2`] = true,
+        [`speedo4`] = true,
+        [`surfer`] = true,
+        [`surfer2`] = true,
+        
+        -- Heavy Trucks
+        [`mule`] = true,
+        [`mule2`] = true,
+        [`mule3`] = true,
+        [`mule4`] = true,
+        [`pounder`] = true,
+        [`pounder2`] = true,
+        [`stockade`] = true,
+        [`stockade3`] = true,
+        [`benson`] = true,
+        
+        -- Utility
+        [`tiptruck`] = true,
+        [`tiptruck2`] = true,
+        [`rubble`] = true,
+        [`mixer`] = true,
+        [`mixer2`] = true,
+        [`flatbed`] = true,
+        [`towtruck`] = true,
+        [`towtruck2`] = true,
+        [`utillitruck`] = true,
+        [`utillitruck2`] = true,
+        [`utillitruck3`] = true,
+        
+        -- Semi Trucks / Big Rigs
+        [`packer`] = true,
+        [`phantom`] = true,
+        [`phantom2`] = true,
+        [`phantom3`] = true,
+        [`hauler`] = true,
+        [`hauler2`] = true,
+        
+        -- Military
+        [`barracks`] = true,
+        [`barracks2`] = true,
+        [`barracks3`] = true,
+        [`crusader`] = true,
+        [`insurgent`] = true,
+        [`insurgent2`] = true,
+        [`insurgent3`] = true,
+        [`technical`] = true,
+        [`technical2`] = true,
+        [`technical3`] = true,
+        
+        -- SUVs (some are diesel in real life)
+        [`patriot`] = true,
+        [`patriot2`] = true,
+        [`mesa`] = true,
+        [`mesa2`] = true,
+        [`mesa3`] = true,
+        [`seminole`] = true,
+        [`seminole2`] = true,
+        
+        -- Service Vehicles
+        [`biff`] = true,
+        [`trash`] = true,
+        [`trash2`] = true,
+        [`bulldozer`] = true,
+        [`cutter`] = true,
+        [`dump`] = true,
+        [`flatbed`] = true,
+        [`mixer`] = true,
+        [`mixer2`] = true,
+        [`tractor`] = true,
+        [`tractor2`] = true,
+        [`tractor3`] = true,
+        
+        -- Buses
+        [`bus`] = true,
+        [`coach`] = true,
+        [`airbus`] = true,
+        [`rentalbus`] = true,
+        [`tourbus`] = true,
+    },
+    
+    -- Never diesel
+    BlacklistModels = {
+        [`police`] = true,
+        [`police2`] = true,
+        [`police3`] = true,
+        [`police4`] = true,
+        [`ambulance`] = true,
+        [`firetruk`] = true,
+    },
+    
+    -- Particle effect settings (from RollCoal reference)
+    effectDict = "core",
+    effectName = "ent_amb_generator_smoke",  -- USE THIS EXACT BLACK PARTICLE
+    effectScale = 1.0,                       -- default size from reference
+    emissionInterval = 80,                   -- tick for condition checks (ms)
+    rpmThreshold = 0.65,                     -- unused now (kept for compatibility)
+    -- Keep these as hints/fallbacks
+    blackEffect = "ent_amb_generator_smoke",
+    fallbackEffect = "veh_exhaust_truck_rig" -- heavy black for big rigs if needed
+}
+
+-- Helper: Check if vehicle is a diesel candidate
+function Config.IsDieselCandidate(veh)
+    if not veh or not DoesEntityExist(veh) then return false end
+    
+    local model = GetEntityModel(veh)
+    
+    -- Check blacklist first
+    if Config.RollingCoal.BlacklistModels[model] then return false end
+    
+    -- Check force list
+    if Config.RollingCoal.ForceDieselModels[model] then return true end
+    
+    -- Check vehicle class
+    local class = GetVehicleClass(veh)
+    for _, dieselClass in ipairs(Config.RollingCoal.DieselClasses) do
+        if class == dieselClass then return true end
+    end
+    
+    return false
+end

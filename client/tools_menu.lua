@@ -743,3 +743,185 @@ RegisterNetEvent('pf_mech:client:resetBrakeCache', function(netId)
         exports['pf-mechanicjob']:ResetBrakeCache(veh)
     end)
 end)
+
+-- Helper: Check if vehicle is diesel (use config helper)
+local function isDieselVehicle(veh)
+    return Config.IsDieselCandidate(veh)
+end
+
+-- Update your existing OpenMechanicToolsMenu function to include coal option
+local function OpenMechanicToolsMenu()
+    local ped = PlayerPedId()
+    local veh = GetVehiclePedIsIn(ped, false)
+    
+    local menu = {
+        { header = 'Mechanic Tools', isMenuHeader = true },
+        -- ...existing menu options...
+    }
+    
+    -- Add coal delete option if vehicle is diesel
+    if veh ~= 0 and isDieselVehicle(veh) then
+        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+        local coalState = CoalVehicles and CoalVehicles[plate] or false
+        
+        menu[#menu+1] = {
+            header = '🚛 Coal Delete',
+            txt = coalState and 'Currently: ENABLED (Rolling Coal)' or 'Currently: DISABLED',
+            params = {
+                event = 'pf_mech:toggleCoalDelete'
+            }
+        }
+    end
+    
+    menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+    
+    exports['qb-menu']:openMenu(menu)
+end
+
+-- NEW: Toggle coal delete from toolbox menu
+RegisterNetEvent('pf_mech:toggleCoalDeleteToolbox', function(data)
+    local veh = data.vehicle
+    local plate = data.plate
+    
+    if not veh or veh == 0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('Vehicle not found', 'error')
+        return
+    end
+    
+    if not Config.IsDieselCandidate(veh) then
+        QBCore.Functions.Notify('This vehicle is not a diesel', 'error')
+        return
+    end
+    
+    local currentState = _G.CoalVehicles[plate] or false
+    local newState = not currentState
+    
+    -- Progress bar
+    QBCore.Functions.Progressbar('installing_coal_delete', 
+        newState and 'Installing coal delete...' or 'Removing coal delete...', 
+        8000, false, true, {
+            disableMovement = true,
+            disableCarMovement = true,
+            disableMouse = false,
+            disableCombat = true,
+        }, {
+            animDict = 'amb@world_human_vehicle_mechanic@male@base',
+            anim = 'base',
+            flags = 49,
+        }, {}, {}, function() -- Success
+            TriggerServerEvent('pf_mech:setCoalDelete', plate, newState)
+            
+            QBCore.Functions.Notify(
+                newState and '🚛 Coal delete installed! Rolling coal enabled - floor it and accelerate!' or '🚛 Coal delete removed',
+                newState and 'success' or 'primary',
+                5000
+            )
+            
+            -- Update local state immediately
+            _G.CoalVehicles[plate] = newState
+            
+        end, function() -- Cancel
+            QBCore.Functions.Notify('Installation cancelled', 'error')
+        end)
+end)
+
+-- Diagnostics handler
+RegisterNetEvent('pf_mech:client:runDiagnostics', function(data)
+    local veh = data.vehicle
+    
+    if not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('Vehicle not found', 'error')
+        return
+    end
+    
+    -- Show progress bar
+    QBCore.Functions.Progressbar('scanning_vehicle', 'Scanning vehicle...', 3000, false, true, {
+        disableMovement = true,
+        disableCarMovement = true,
+        disableMouse = false,
+        disableCombat = true,
+    }, {
+        animDict = 'amb@world_human_vehicle_mechanic@male@base',
+        anim = 'base',
+        flags = 49,
+    }, {}, {}, function() -- Success
+        -- Get diagnostics from entity state
+        local state = Entity(veh).state
+        local partDamage = state.partDamage or {}
+        
+        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+        local model = GetDisplayNameFromVehicleModel(GetEntityModel(veh))
+        
+        -- Build diagnostics menu
+        local diagMenu = {
+            { 
+                header = '📊 Diagnostics: ' .. model,
+                txt = 'Plate: ' .. plate,
+                isMenuHeader = true 
+            }
+        }
+        
+        -- Engine health
+        local engineHealth = math.floor(GetVehicleEngineHealth(veh) / 10)
+        diagMenu[#diagMenu+1] = {
+            header = '🔧 Engine Health',
+            txt = engineHealth .. '%',
+            params = {}
+        }
+        
+        -- Body health
+        local bodyHealth = math.floor(GetVehicleBodyHealth(veh) / 10)
+        diagMenu[#diagMenu+1] = {
+            header = '🚗 Body Health',
+            txt = bodyHealth .. '%',
+            params = {}
+        }
+        
+        -- Part damages
+        local parts = {
+            { key = 'oil', label = 'Engine Oil', icon = '🛢️' },
+            { key = 'brakes', label = 'Brake Pads', icon = '🛑' },
+            { key = 'carbattery', label = 'Battery', icon = '🔋' },
+            { key = 'sparkplugs', label = 'Spark Plugs', icon = '⚡' },
+            { key = 'alternator', label = 'Alternator', icon = '🔌' },
+            { key = 'suspension', label = 'Suspension', icon = '🔩' },
+            { key = 'axle', label = 'Axle', icon = '⚙️' }
+        }
+        
+        for _, part in ipairs(parts) do
+            local damage = tonumber(partDamage[part.key]) or 0
+            local health = 100 - damage
+            local status = 'Good'
+            
+            if health < 30 then
+                status = 'CRITICAL'
+            elseif health < 60 then
+                status = 'Poor'
+            elseif health < 80 then
+                status = 'Fair'
+            end
+            
+            diagMenu[#diagMenu+1] = {
+                header = part.icon .. ' ' .. part.label,
+                txt = string.format('%d%% - %s', health, status),
+                params = {}
+            }
+        end
+        
+        diagMenu[#diagMenu+1] = { header = 'Back', params = { event = 'pf_mech:client:openTools' } }
+        diagMenu[#diagMenu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+        
+        exports['qb-menu']:openMenu(diagMenu)
+        
+    end, function() -- Cancel
+        QBCore.Functions.Notify('Scan cancelled', 'error')
+    end)
+end)
+
+-- Open tools menu event
+RegisterNetEvent('pf_mech:client:openTools', function()
+    OpenMechanicToolsMenu()
+end)
+
+-- Export for other resources
+exports('OpenMechanicTools', OpenMechanicToolsMenu)

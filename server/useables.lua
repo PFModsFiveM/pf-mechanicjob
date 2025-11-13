@@ -188,24 +188,32 @@ QBCore.Functions.CreateCallback('pf-mechanicjob:server:consumeBrakePad', functio
     end
 end)
 
--- Diagnostics tool -> open tools menu
-QBCore.Functions.CreateUseableItem('diagnostic_tool', function(src, item)
-    TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', src)
-end)
--- Common aliases (use whichever your server uses)
-QBCore.Functions.CreateUseableItem('mechanic_tools', function(src, item)
-    TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', src)
-end)
-QBCore.Functions.CreateUseableItem('mech_tools', function(src, item)
-    TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', src)
+-- Register mechanic toolbox
+QBCore.Functions.CreateUseableItem('mechanic_tools', function(source, item)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    
+    -- Check if player is mechanic
+    if not Config.IsMechanicJob(Player.PlayerData.job.name) then
+        TriggerClientEvent('QBCore:Notify', source, 'You must be a mechanic', 'error')
+        return
+    end
+    
+    -- Open tools menu
+    TriggerClientEvent('pf_mech:client:openTools', source)
 end)
 
--- Optional: tablet items still open the management tablet
-QBCore.Functions.CreateUseableItem('mech_tablet', function(src, item)
-    TriggerClientEvent('pf-mechanicjob:client:useMechTablet', src)
-end)
-QBCore.Functions.CreateUseableItem('mechanic_tablet', function(src, item)
-    TriggerClientEvent('pf-mechanicjob:client:useMechTablet', src)
+-- Register diagnostic tool (alternative item)
+QBCore.Functions.CreateUseableItem('diagnostics_tool', function(source, item)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    
+    if not Config.IsMechanicJob(Player.PlayerData.job.name) then
+        TriggerClientEvent('QBCore:Notify', source, 'You must be a mechanic', 'error')
+        return
+    end
+    
+    TriggerClientEvent('pf_mech:client:openTools', source)
 end)
 
 -- Register all repair items as useable

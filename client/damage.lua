@@ -286,18 +286,15 @@ local function attemptVehicleStart(veh, damage)
     -- Dead battery = no start (only notify once)
     if batteryHealth <= 0 then
         if not batteryDeadNotified[plate] then
-            QBCore.Functions.Notify('🔋 Battery is completely dead! Needs replacement.', 'error', 5000)
+            QBCore.Functions.Notify(L('battery_dead'), 'error', 5000)
             batteryDeadNotified[plate] = true
         end
         SetVehicleEngineOn(veh, false, true, true)
         return false
-    else
-        batteryDeadNotified[plate] = nil -- Reset notification flag when battery is alive
     end
     
-    -- Dead sparkplugs = no start
     if sparkplugHealth <= 0 then
-        QBCore.Functions.Notify('⚡ Spark plugs failed - engine won\'t start!', 'error', 3000)
+        QBCore.Functions.Notify(L('sparkplugs_failed'), 'error', 3000)
         SetVehicleEngineOn(veh, false, true, true)
         return false
     end
@@ -339,17 +336,17 @@ local function attemptVehicleStart(veh, damage)
         applyDamage(veh, damage)
         
         if batteryHealth < 30 then
-            QBCore.Functions.Notify('🔋 Battery struggling... Try again', 'error', 2000)
+            QBCore.Functions.Notify(L('battery_struggling'), 'error', 2000)
         else
-            QBCore.Functions.Notify('⚡ Engine misfired', 'error', 2000)
+            QBCore.Functions.Notify(L('engine_misfired'), 'error', 2000)
         end
         print('[DAMAGE DEBUG] Start FAILED (rolled', roll, 'needed <=', startChance, ')')
     else
         if batteryHealth < 50 then
-            QBCore.Functions.Notify('🔋 Engine started (battery weak)', 'warning', 2000)
+            QBCore.Functions.Notify(L('battery_weak'), 'warning', 2000)
         end
         if alternatorHealth < 40 then
-            QBCore.Functions.Notify('⚡ Charging system fault detected', 'warning', 3000)
+            QBCore.Functions.Notify(L('charging_fault'), 'warning', 3000)
         end
         print('[DAMAGE DEBUG] Start SUCCESS')
     end
