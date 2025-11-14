@@ -294,18 +294,6 @@ for i = 1, 4 do
     end)
 end
 
--- Register all armor upgrade items
-for i = 1, 5 do
-    QBCore.Functions.CreateUseableItem('armor'..i, function(source, item)
-        TriggerClientEvent('pf-mechanicjob:client:useUpgradeItem', source, {
-            item = 'armor'..i,
-            modType = 16,
-            modIndex = i - 1,
-            label = 'Armor Upgrade Level '..i
-        })
-    end)
-end
-
 -- Register turbo
 QBCore.Functions.CreateUseableItem('turbo', function(source, item)
     TriggerClientEvent('pf-mechanicjob:client:useUpgradeItem', source, {
@@ -328,5 +316,28 @@ RegisterNetEvent('pf-mechanicjob:server:consumeUpgradeItem', function(itemName)
     
     if Player.Functions.RemoveItem(itemName, 1) then
         TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], 'remove', 1)
+    end
+end)
+
+-- NEW: Server event to return upgrade item after downgrade
+RegisterNetEvent('pf-mechanicjob:server:returnUpgradeItem', function(itemName)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    
+    -- Check if item exists in shared items
+    if not QBCore.Shared.Items[itemName] then
+        if Config.Debug then
+            print(string.format('[UPGRADE] Item %s not found in QBCore.Shared.Items', itemName))
+        end
+        return
+    end
+    
+    -- Add item back to inventory
+    if Player.Functions.AddItem(itemName, 1) then
+        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], 'add', 1)
+        TriggerClientEvent('QBCore:Notify', src, 'Removed upgrade part returned to inventory', 'success', 3000)
+    else
+        TriggerClientEvent('QBCore:Notify', src, 'Inventory full - item lost!', 'error', 5000)
     end
 end)

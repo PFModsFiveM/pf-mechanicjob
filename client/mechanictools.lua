@@ -219,6 +219,74 @@ local function openCosmeticsMenu(veh)
     exports['qb-menu']:openMenu(menu)
 end
 
+-- Helper: progress bar (import from main.lua or define locally)
+local function DoProgress(label, ms, dict, anim)
+    ms = tonumber(ms) or 3000
+    label = label or 'Working...'
+    local ped = PlayerPedId()
+
+    -- anim (optional)
+    if dict and anim then
+        if not HasAnimDictLoaded(dict) then
+            RequestAnimDict(dict)
+            while not HasAnimDictLoaded(dict) do Wait(0) end
+        end
+        TaskPlayAnim(ped, dict, anim, 8.0, -8.0, -1, 49, 0.0, false, false, false)
+    end
+
+    -- Try multiple progress bar systems
+    -- 1) ox_lib
+    local function resourceActive(name)
+        local st = GetResourceState(name)
+        return st == 'started' or st == 'starting'
+    end
+
+    if resourceActive('ox_lib') and lib and lib.progressCircle then
+        local ok = lib.progressCircle({
+            duration = ms,
+            position = 'bottom',
+            label = label,
+            useWhileDead = false,
+            canCancel = true,
+            disable = { move = true, car = true, combat = true, mouse = false }
+        })
+        ClearPedTasks(ped)
+        return ok and true or false
+    end
+
+    -- 2) QBCore.Functions.Progressbar
+    if QBCore and QBCore.Functions and type(QBCore.Functions.Progressbar) == 'function' then
+        local finished, cancelled = false, true
+        QBCore.Functions.Progressbar(
+            'pf_mech_prog',
+            label,
+            ms,
+            false,
+            true,
+            { disableMovement = true, disableCarMovement = true, disableMouse = false, disableCombat = true },
+            dict and { animDict = dict, anim = anim, flags = 49 } or {},
+            {},
+            function() cancelled=false; finished=true end,
+            function() cancelled=true;  finished=true end
+        )
+        while not finished do Wait(25) end
+        ClearPedTasksImmediately(ped)
+        return not cancelled
+    end
+
+    -- 3) Fallback: simple wait
+    local untilAt = GetGameTimer() + ms
+    while GetGameTimer() < untilAt do
+        DisableControlAction(0, 21, true)
+        DisableControlAction(0, 24, true)
+        DisableControlAction(0, 25, true)
+        DisableControlAction(0, 22, true)
+        Wait(0)
+    end
+    ClearPedTasks(ped)
+    return true
+end
+
 -- Open upgrade display menu
 RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
     local veh = nearbyVeh(6.0)
@@ -259,10 +327,32 @@ RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
             local header = upgrade.label
             local txt = upgrade.levelName
             
+            -- Determine if upgrade can be downgraded
+            local canDowngrade = false
+            if key == 'turbo' then
+                -- Turbo: can remove if installed
+                canDowngrade = upgrade.current >= 0
+            else
+                -- Other upgrades: can downgrade if above level 1 (index 0)
+                canDowngrade = upgrade.current > 0
+            end
+            
             menu[#menu+1] = {
                 header = header,
                 txt = txt,
-                params = {}
+                params = canDowngrade and {
+                    event = 'pf-mechanicjob:client:downgradeUpgrade',
+                    args = { 
+                        vehicle = veh, 
+                        upgradeType = key,
+                        modType = key == 'engine' and 11 or 
+                                 key == 'brakes' and 12 or 
+                                 key == 'transmission' and 13 or 
+                                 key == 'suspension' and 15 or 
+                                 key == 'turbo' and 18 or 11,
+                        currentLevel = upgrade.current
+                    }
+                } or {}
             }
         else
             -- Upgrade not available for this vehicle
@@ -290,7 +380,7 @@ RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
     exports['qb-menu']:openMenu(menu)
 end)
 
--- Handler for opening cosmetics menu
+-- Open cosmetics menu
 RegisterNetEvent('pf-mechanicjob:client:openCosmeticsMenu', function(data)
     local veh = data and data.vehicle or nearbyVeh(6.0)
     
@@ -300,6 +390,95 @@ RegisterNetEvent('pf-mechanicjob:client:openCosmeticsMenu', function(data)
     end
     
     openCosmeticsMenu(veh)
+end)
+
+-- NEW: Handler for downgrading upgrades
+RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
+    local veh = data and data.vehicle or nearbyVeh(6.0)
+    
+    if veh == 0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return
+    end
+    
+    -- Check if player is outside vehicle
+    local ped = PlayerPedId()
+    if IsPedInAnyVehicle(ped, false) then
+        QBCore.Functions.Notify('You must be outside the vehicle', 'error')
+        return
+    end
+    
+    -- Check if engine is off
+    if GetIsVehicleEngineRunning(veh) then
+        QBCore.Functions.Notify('Turn the engine off first', 'error')
+        return
+    end
+    
+    local upgradeType = data.upgradeType
+    local modType = data.modType
+    local currentLevel = data.currentLevel
+    
+    -- Determine new level and item to return
+    local newLevel = -1
+    local itemToReturn = nil
+    
+    if upgradeType == 'turbo' then
+        -- Turbo: remove and return turbo item
+        newLevel = -1
+        itemToReturn = 'turbo'
+    else
+        -- Other upgrades: downgrade by 1 level, minimum is 0 (level 1)
+        newLevel = math.max(0, currentLevel - 1)
+        
+        -- Determine item name for current level
+        -- Example: engine at level 3 (index 2) returns engine3
+        if upgradeType == 'engine' then
+            itemToReturn = 'engine' .. (currentLevel + 1)
+        elseif upgradeType == 'brakes' then
+            itemToReturn = 'brakes' .. (currentLevel + 1)
+        elseif upgradeType == 'transmission' then
+            itemToReturn = 'transmission' .. (currentLevel + 1)
+        elseif upgradeType == 'suspension' then
+            itemToReturn = 'suspension' .. (currentLevel + 1)
+        end
+    end
+    
+    -- Show progress bar
+    local progressTime = 6000 -- 6 seconds
+    local progressLabel = string.format('Removing %s upgrade...', upgradeType)
+    
+    if not DoProgress(progressLabel, progressTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+        QBCore.Functions.Notify('Downgrade cancelled', 'error')
+        return
+    end
+    
+    -- Apply the downgrade
+    SetVehicleModKit(veh, 0)
+    
+    if upgradeType == 'turbo' then
+        ToggleVehicleMod(veh, 18, false)
+        QBCore.Functions.Notify('Turbo removed', 'success', 3000)
+    else
+        SetVehicleMod(veh, modType, newLevel, false)
+        QBCore.Functions.Notify(string.format('%s downgraded to Level %d', upgradeType:gsub("^%l", string.upper), newLevel + 1), 'success', 3000)
+    end
+    
+    -- Return item to inventory
+    if itemToReturn then
+        TriggerServerEvent('pf-mechanicjob:server:returnUpgradeItem', itemToReturn)
+    end
+    
+    -- Sync to all clients
+    TriggerServerEvent('pf-mechanicjob:server:syncUpgrade', {
+        vehicle = NetworkGetNetworkIdFromEntity(veh),
+        modType = modType,
+        modIndex = newLevel,
+        isTurbo = upgradeType == 'turbo'
+    })
+    
+    -- Reopen menu to show updated state
+    Wait(200)
+    TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
 end)
 
 -- Debug command (only if Config.Debug)
