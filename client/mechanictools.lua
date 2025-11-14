@@ -191,24 +191,37 @@ local function openCosmeticsMenu(veh)
     -- Sort cosmetics by label
     table.sort(cosmetics, function(a, b) return a.label < b.label end)
     
+    -- CHANGED: Add clickable entries with current state
     for _, cosmetic in ipairs(cosmetics) do
-        local optionText
+        local currentMod = GetVehicleMod(veh, cosmetic.modType)
+        local currentTxt
+        
         if cosmetic.isToggle then
-            optionText = '[On/Off Option]'
+            local on = IsToggleModOn(veh, cosmetic.modType)
+            currentTxt = on and 'Currently: On' or 'Currently: Off'
         else
-            optionText = string.format('[%d options]', cosmetic.count)
+            currentTxt = currentMod ~= -1 and ('Current: Option #'..currentMod) or 'Current: Stock'
         end
         
         menu[#menu+1] = {
-            header = string.format('%s - %s', cosmetic.label, optionText),
-            txt = 'View only',
-            params = {}
+            header = string.format('%s (%d options)', cosmetic.label, cosmetic.count),
+            txt = currentTxt,
+            params = {
+                event = 'pf-mechanicjob:client:viewCosmeticMod',
+                args = { 
+                    vehicle = veh, 
+                    modType = cosmetic.modType, 
+                    count = cosmetic.count, 
+                    isToggle = cosmetic.isToggle, 
+                    label = cosmetic.label 
+                }
+            }
         }
     end
     
     menu[#menu+1] = {
         header = 'Back',
-        params = { event = 'pf-mechanicjob:client:openUpgradeMenu' }
+        params = { event = 'pf-mechanicjob:client:openMechanicTools' }
     }
     
     menu[#menu+1] = {
@@ -466,15 +479,11 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
     local itemToReturn = nil
     
     if upgradeType == 'turbo' then
-        -- Turbo: remove and return turbo item
         newLevel = -1
         itemToReturn = 'turbo'
     else
-        -- Other upgrades: downgrade by 1 level, minimum is 0 (level 1)
         newLevel = math.max(0, currentLevel - 1)
         
-        -- Determine item name for current level
-        -- Example: engine at level 3 (index 2) returns engine3
         if upgradeType == 'engine' then
             itemToReturn = 'engine' .. (currentLevel + 1)
         elseif upgradeType == 'brakes' then
@@ -486,7 +495,6 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
         end
     end
     
-    -- FIXED: Use proper repair animation
     local animDict = 'mini@repair'
     local animName = 'fixing_a_ped'
     
@@ -495,8 +503,7 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
     
     TaskPlayAnim(ped, animDict, animName, 8.0, -8.0, -1, 49, 0.0, false, false, false)
     
-    -- Show progress bar
-    local progressTime = 6000 -- 6 seconds
+    local progressTime = 6000
     local progressLabel = string.format('Removing %s upgrade...', upgradeType)
     
     if not DoProgress(progressLabel, progressTime, animDict, animName) then
@@ -507,7 +514,6 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
     
     ClearPedTasks(ped)
     
-    -- Apply the downgrade
     SetVehicleModKit(veh, 0)
     
     if upgradeType == 'turbo' then
@@ -518,12 +524,10 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
         QBCore.Functions.Notify(string.format('%s downgraded to Level %d', upgradeType:gsub("^%l", string.upper), newLevel + 1), 'success', 3000)
     end
     
-    -- Return item to inventory
     if itemToReturn then
         TriggerServerEvent('pf-mechanicjob:server:returnUpgradeItem', itemToReturn)
     end
     
-    -- Sync to all clients
     TriggerServerEvent('pf-mechanicjob:server:syncUpgrade', {
         vehicle = NetworkGetNetworkIdFromEntity(veh),
         modType = modType,
@@ -531,7 +535,6 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
         isTurbo = upgradeType == 'turbo'
     })
     
-    -- Reopen menu to show updated state
     Wait(200)
     TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
 end)
@@ -556,20 +559,17 @@ RegisterNetEvent('pf-mechanicjob:client:removeDPF', function(data)
         return
     end
     
-    -- Check if player is outside vehicle
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
         QBCore.Functions.Notify('You must be outside the vehicle', 'error')
         return
     end
     
-    -- Check if engine is off
     if GetIsVehicleEngineRunning(veh) then
         QBCore.Functions.Notify('Turn the engine off first', 'error')
         return
     end
     
-    -- Use proper repair animation
     local animDict = 'mini@repair'
     local animName = 'fixing_a_ped'
     
@@ -578,7 +578,6 @@ RegisterNetEvent('pf-mechanicjob:client:removeDPF', function(data)
     
     TaskPlayAnim(ped, animDict, animName, 8.0, -8.0, -1, 49, 0.0, false, false, false)
     
-    -- Show progress bar
     if not DoProgress('Removing DPF...', Config.DPFRemoveTime or 6000, animDict, animName) then
         ClearPedTasks(ped)
         QBCore.Functions.Notify('DPF removal cancelled', 'error')
@@ -586,16 +585,10 @@ RegisterNetEvent('pf-mechanicjob:client:removeDPF', function(data)
     end
     
     ClearPedTasks(ped)
-    
-    -- Tell server to remove DPF (server will give back the item)
     TriggerServerEvent('pf_mech:dpf:remove', plate)
-    
     QBCore.Functions.Notify('🚛 DPF removed! You received the DPF item', 'success', 5000)
     
-    -- Wait for server to sync state
     Wait(1000)
-    
-    -- Reopen menu to show updated state
     TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
 end)
 
@@ -620,7 +613,6 @@ RegisterNetEvent('pf-mechanicjob:client:useDPFItem', function()
         return
     end
     
-    -- Use the same installation handler
     TriggerEvent('pf-mechanicjob:client:installDPF', {
         vehicle = veh,
         plate = plate
@@ -644,36 +636,30 @@ RegisterNetEvent('pf-mechanicjob:client:installDPF', function(data)
     
     if not IsDPFRemoved(veh) then
         QBCore.Functions.Notify('DPF already installed', 'error')
-        -- FIXED: Reopen menu instead of closing
         Wait(200)
         TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
         return
     end
     
-    -- Check if player is outside vehicle
     local ped = PlayerPedId()
     if IsPedInAnyVehicle(ped, false) then
         QBCore.Functions.Notify('You must be outside the vehicle', 'error')
         return
     end
     
-    -- Check if engine is off
     if GetIsVehicleEngineRunning(veh) then
         QBCore.Functions.Notify('Turn the engine off first', 'error')
         return
     end
     
-    -- Check if player has DPF item (use proper server callback name)
     QBCore.Functions.TriggerCallback('pf_mech:hasDPFItem', function(hasDPF)
         if not hasDPF then
             QBCore.Functions.Notify('You need a DPF filter to install it!', 'error')
-            -- FIXED: Reopen menu so player can see the error and try again
             Wait(200)
             TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
             return
         end
         
-        -- Use proper repair animation
         local animDict = 'mini@repair'
         local animName = 'fixing_a_ped'
         
@@ -682,35 +668,179 @@ RegisterNetEvent('pf-mechanicjob:client:installDPF', function(data)
         
         TaskPlayAnim(ped, animDict, animName, 8.0, -8.0, -1, 49, 0.0, false, false, false)
         
-        -- Show progress bar
         if not DoProgress('Installing DPF...', Config.DPFInstallTime or 6000, animDict, animName) then
             ClearPedTasks(ped)
             QBCore.Functions.Notify('DPF installation cancelled', 'error')
-            -- Reopen menu after cancel
             Wait(200)
             TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
             return
         end
         
         ClearPedTasks(ped)
-        
-        -- Tell server to install DPF (server will consume the item)
         TriggerServerEvent('pf_mech:dpf:install', plate)
-        
         QBCore.Functions.Notify('🚛 DPF installed! Rolling coal disabled', 'success', 5000)
         
-        -- Wait for server to sync state
         Wait(1000)
-        
-        -- Reopen menu to show updated state
         TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
-        
     end)
 end)
 
--- Debug command (only if Config.Debug)
-if Config.Debug then
-    RegisterCommand('testupgrades', function()
-        TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
-    end, false)
+-- NEW: Build unified mechanic tools menu
+local function buildMechanicToolsMenu(veh)
+    SetVehicleModKit(veh, 0)
+    local plate = _GetPlate(veh) or 'UNKNOWN'
+    local modelHash = GetEntityModel(veh)
+    local modelDisp = GetLabelText(GetDisplayNameFromVehicleModel(modelHash))
+    if modelDisp == 'NULL' then modelDisp = GetDisplayNameFromVehicleModel(modelHash) end
+
+    local upgrades = getVehicleUpgrades(veh)
+
+    local rows = {
+        { header = ('Mechanic Tools • %s'):format(plate), txt = modelDisp, isMenuHeader = true },
+        { header = '--- Performance Upgrades ---', isMenuHeader = true }
+    }
+
+    local perfOrder = {'engine','brakes','transmission','suspension','turbo'}
+    for _, key in ipairs(perfOrder) do
+        local up = upgrades[key]
+        if up then
+            local canDown = (key == 'turbo' and up.current >= 0) or (key ~= 'turbo' and up.current > 0)
+            
+            local header = up.label
+            local txt
+            
+            if key == 'turbo' then
+                txt = up.current >= 0 and 'Installed' or 'Not Installed'
+            else
+                local levelPrefix = up.current == -1 and 'Stock:' or ('Level %d:'):format(up.current + 1)
+                txt = ('%s [LVL %d/%d]'):format(levelPrefix, up.current == -1 and 0 or (up.current + 1), up.max)
+            end
+            
+            rows[#rows+1] = {
+                header = header,
+                txt = txt,
+                params = canDown and {
+                    event = 'pf-mechanicjob:client:downgradeUpgrade',
+                    args = {
+                        vehicle = veh,
+                        upgradeType = key,
+                        modType = key == 'engine' and 11 or key == 'brakes' and 12 or key == 'transmission' and 13 or key == 'suspension' and 15 or 18,
+                        currentLevel = up.current
+                    }
+                } or {}
+            }
+        end
+    end
+
+    -- DPF section
+    if Config.IsDieselCandidate(veh) then
+        local removed = IsDPFRemoved and IsDPFRemoved(veh)
+        rows[#rows+1] = { header = '--- Diesel System ---', isMenuHeader = true }
+        
+        if removed then
+            rows[#rows+1] = {
+                header = 'DPF: Removed',
+                txt = 'Install to disable coal',
+                params = { event='pf-mechanicjob:client:installDPF', args={ vehicle=veh, plate=plate } }
+            }
+        else
+            rows[#rows+1] = {
+                header = 'DPF: Installed',
+                txt = 'Remove to enable coal',
+                params = { event='pf-mechanicjob:client:removeDPF', args={ vehicle=veh, plate=plate } }
+            }
+        end
+    end
+
+    -- Cosmetics button
+    rows[#rows+1] = {
+        header = 'List of Possible Cosmetics',
+        txt = '',
+        params = {
+            event = 'pf-mechanicjob:client:openCosmeticsMenu',
+            args = { vehicle = veh }
+        }
+    }
+
+    rows[#rows+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+    return rows
 end
+
+-- NEW: Unified mechanic tools menu event
+RegisterNetEvent('pf-mechanicjob:client:openMechanicTools', function()
+    local veh = nearbyVeh(6.0)
+    if veh == 0 then QBCore.Functions.Notify('No vehicle nearby', 'error'); return end
+    local menu = buildMechanicToolsMenu(veh)
+    exports['qb-menu']:openMenu(menu)
+end)
+
+-- NEW: Cosmetic detail viewer
+RegisterNetEvent('pf-mechanicjob:client:viewCosmeticMod', function(data)
+    local veh = data.vehicle
+    if not veh or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('Vehicle not found', 'error'); return
+    end
+    SetVehicleModKit(veh, 0)
+
+    local modType = data.modType
+    local count = tonumber(data.count) or 0
+    local isToggle = data.isToggle
+    local label = data.label or ('Mod '..modType)
+
+    local menu = {
+        { header = label, txt = ('Mod Type %d'):format(modType), isMenuHeader = true }
+    }
+
+    if isToggle then
+        local on = IsToggleModOn(veh, modType)
+        menu[#menu+1] = {
+            header = on and 'Disable' or 'Enable',
+            txt = 'Toggle',
+            params = {
+                event = 'pf-mechanicjob:client:applyCosmeticToggle',
+                args = { vehicle = veh, modType = modType, enable = not on }
+            }
+        }
+    else
+        for i=0,count-1 do
+            menu[#menu+1] = {
+                header = ('Option #%d'):format(i),
+                txt = 'Apply',
+                params = {
+                    event = 'pf-mechanicjob:client:applyCosmeticMod',
+                    args = { vehicle = veh, modType = modType, index = i }
+                }
+            end
+        end
+    end
+
+    menu[#menu+1] = { header='Back', params = { event='pf-mechanicjob:client:openMechanicTools' } }
+    menu[#menu+1] = { header='Close', params = { event='qb-menu:client:closeMenu' } }
+    exports['qb-menu']:openMenu(menu)
+end)
+
+-- NEW: Apply cosmetic mod
+RegisterNetEvent('pf-mechanicjob:client:applyCosmeticMod', function(data)
+    local veh = data.vehicle
+    if not veh or not DoesEntityExist(veh) then return end
+    local idx = tonumber(data.index) or -1
+    local modType = tonumber(data.modType) or 0
+    SetVehicleModKit(veh, 0)
+    if idx >= 0 then
+        SetVehicleMod(veh, modType, idx, false)
+        QBCore.Functions.Notify('Cosmetic applied', 'success')
+    end
+    Wait(300)
+    TriggerEvent('pf-mechanicjob:client:openMechanicTools')
+end)
+
+-- NEW: Toggle cosmetic mod
+RegisterNetEvent('pf-mechanicjob:client:applyCosmeticToggle', function(data)
+    local veh = data.vehicle
+    if not veh or not DoesEntityExist(veh) then return end
+    local modType = tonumber(data.modType) or 0
+    ToggleVehicleMod(veh, modType, data.enable and true or false)
+    QBCore.Functions.Notify(data.enable and 'Enabled' or 'Disabled', 'success')
+    Wait(300)
+    TriggerEvent('pf-mechanicjob:client:openMechanicTools')
+end)

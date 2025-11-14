@@ -451,8 +451,8 @@ AddEventHandler('QBCore:Client:UseItem', function(item)
     local name = item and item.name
     if not name then return end
 
-    -- NEW: Toolbox handler - shows removable parts menu
-    if name == 'mechanic_tools' or name == 'toolbox' then
+    -- CHANGED: remove mechanic_tools from this branch (leave toolbox only)
+    if name == 'toolbox' then
       local veh = nearbyVeh(6.0)
       if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
       
@@ -892,54 +892,54 @@ end
 local function _DPFRemoved(veh) return veh and CoalVehicles[_NormPlate(veh)] == true end
 
 AddEventHandler('QBCore:Client:UseItem', function(item)
-  local name = item and item.name
-  if not name then return end
+    local name = item and item.name
+    if not name then return end
 
-  if name == 'diagnostics_tool' then
-    local veh = nearbyVeh(6.0)
-    if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
-    local plate = _NormPlate(veh) or 'UNKNOWN'
-    local engPct = math.floor(math.max(0, math.min(100, GetVehicleEngineHealth(veh)/10)))
-    local bodyPct= math.floor(math.max(0, math.min(100, GetVehicleBodyHealth(veh)/10)))
-    local diesel = Config.IsDieselCandidate(veh)
-    local removed = _DPFRemoved(veh)
+    if name == 'diagnostics_tool' then
+      local veh = nearbyVeh(6.0)
+      if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+      local plate = _NormPlate(veh) or 'UNKNOWN'
+      local engPct = math.floor(math.max(0, math.min(100, GetVehicleEngineHealth(veh)/10)))
+      local bodyPct= math.floor(math.max(0, math.min(100, GetVehicleBodyHealth(veh)/10)))
+      local diesel = Config.IsDieselCandidate(veh)
+      local removed = _DPFRemoved(veh)
 
-    local menu = {
-      { header = ('Diagnostics • %s'):format(plate), isMenuHeader = true },
-      { header = ('Engine - %d%%'):format(engPct),  txt = 'Health' },
-      { header = ('Body - %d%%'):format(bodyPct),    txt = 'Health' },
-    }
+      local menu = {
+        { header = ('Diagnostics • %s'):format(plate), isMenuHeader = true },
+        { header = ('Engine - %d%%'):format(engPct),  txt = 'Health' },
+        { header = ('Body - %d%%'):format(bodyPct),    txt = 'Health' },
+      }
 
-    -- Always show DPF status row
-    menu[#menu+1] = removed and {
-      header = 'DPF (Removed)',
-      txt = diesel and 'Rolling coal enabled' or 'Non-diesel vehicle',
-      params = { event='pf_mech:dpf:clientInstall', args={ plate=plate, veh=NetworkGetNetworkIdFromEntity(veh) } }
-    } or {
-      header = 'DPF (Installed)',
-      txt = diesel and 'Remove to enable rolling coal' or 'Non-diesel vehicle',
-      params = { event='pf_mech:dpf:clientRemove', args={ plate=plate, veh=NetworkGetNetworkIdFromEntity(veh) } }
-    }
+      -- Always show DPF status row
+      menu[#menu+1] = removed and {
+        header = 'DPF (Removed)',
+        txt = diesel and 'Rolling coal enabled' or 'Non-diesel vehicle',
+        params = { event='pf_mech:dpf:clientInstall', args={ plate=plate, veh=NetworkGetNetworkIdFromEntity(veh) } }
+      } or {
+        header = 'DPF (Installed)',
+        txt = diesel and 'Remove to enable rolling coal' or 'Non-diesel vehicle',
+        params = { event='pf_mech:dpf:clientRemove', args={ plate=plate, veh=NetworkGetNetworkIdFromEntity(veh) } }
+      }
 
-    menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
-    exports['qb-menu']:openMenu(menu)
-    return
-  end
-
-  if name == Config.DPFItem then
-    local veh = nearbyVeh(6.0)
-    if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
-    if not _DPFRemoved(veh) then QBCore.Functions.Notify('DPF already installed','error'); return end
-    TriggerEvent('pf_mech:dpf:clientInstall', { plate=_NormPlate(veh), veh=NetworkGetNetworkIdFromEntity(veh) })
-    return
-  end
-
-  -- cosmetic items (mods)
-  if name == "spoiler" or name == "bumper" or name == "skirts" or name == "exhaust"
-     or name == "rollcage" or name == "hood" or name == "roof" then
-      -- This will be caught by server CreateUseableItem instead
+      menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
+      exports['qb-menu']:openMenu(menu)
       return
-  end
+    end
+
+    if name == Config.DPFItem then
+      local veh = nearbyVeh(6.0)
+      if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+      if not _DPFRemoved(veh) then QBCore.Functions.Notify('DPF already installed','error'); return end
+      TriggerEvent('pf_mech:dpf:clientInstall', { plate=_NormPlate(veh), veh=NetworkGetNetworkIdFromEntity(veh) })
+      return
+    end
+
+    -- cosmetic items (mods)
+    if name == "spoiler" or name == "bumper" or name == "skirts" or name == "exhaust"
+       or name == "rollcage" or name == "hood" or name == "roof" then
+        -- This will be caught by server CreateUseableItem instead
+        return
+    end
 end)
 
 -- Fallback manual command

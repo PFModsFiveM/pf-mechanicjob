@@ -497,7 +497,7 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
         ClearPedTasks(ped)
         StopWeld()
         CloseAllDoors(veh)
-        -- Open diagnostics menu directly
+        -- CHANGED: Open diagnostics menu (not mechanic tools)
         TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
         return
     end
@@ -515,6 +515,8 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
             currentClipboard = CreateObject(clipProp, 0,0,0,true,true,false)
             AttachEntityToEntity(currentClipboard, ped, GetPedBoneIndex(ped,18905), 0.1,0.02,0.05, -50.0,90.0,0.0, true,true,false,true,1,true)
             TaskPlayAnim(ped, clipDict, clipAnim, 8.0, -8.0, -1, 50, 0, false, false, false)
+            
+            -- CHANGED: Open diagnostics health menu (not unified mechanic tools)
             TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
         end,
         function()

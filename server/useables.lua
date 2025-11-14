@@ -45,7 +45,7 @@ QBCore.Functions.CreateUseableItem('mechanic_tools', function(source)
     end
     
     -- Trigger the inspection event from tools_menu.lua
-    TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', source)
+    TriggerClientEvent('pf-mechanicjob:client:openMechanicTools', source)  -- Opens performance/cosmetic menu
 end)
 
 -- Make alternator usable
@@ -231,18 +231,24 @@ for _, itemName in ipairs(repairItems) do
     end)
 end
 
--- Diagnostics tool opens inspection (PROGRESS -> image menu)
+-- REMOVE duplicate earlier mechanic_tools registration blocks (keep only this one)
+QBCore.Functions.CreateUseableItem('mechanic_tools', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not isAllowedJob(Player, 'mechanic_tools') then
+        TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
+        return
+    end
+    TriggerClientEvent('pf-mechanicjob:client:openMechanicTools', source)  -- Opens performance/cosmetic menu
+end)
+
+-- CHANGED: diagnostics_tool opens inspection flow (leads to diagnostics menu with health)
 QBCore.Functions.CreateUseableItem('diagnostics_tool', function(source)
-  TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', source)  -- CHANGED
-end)
-
--- DPF item (to reinstall)
-QBCore.Functions.CreateUseableItem(Config.DPFItem, function(source, item)
-  if item and item.name == Config.DPFItem then
-    TriggerClientEvent('QBCore:Client:UseItem', source, { name = Config.DPFItem })
-  end
-end)
-
-QBCore.Functions.CreateUseableItem('dpf', function(src, item)
-  TriggerClientEvent('QBCore:Client:UseItem', src, { name = 'dpf' })
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not isAllowedJob(Player, 'diagnostics_tool') then
+        TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
+        return
+    end
+    TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', source)  -- Opens inspection → diagnostics health menu
 end)

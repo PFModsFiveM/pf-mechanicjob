@@ -1309,3 +1309,10 @@ end)
 
 -- No diagnostics modifications needed (DPF & coal remain).
 
+QBCore.Functions.CreateCallback('pf_mech:hasDPFItem', function(source, cb)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then cb(false) return end
+    local item = Player.Functions.GetItemByName(Config.DPFItem)
+    cb(item ~= nil)
+end)
+
