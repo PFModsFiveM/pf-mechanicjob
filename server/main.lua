@@ -1020,15 +1020,6 @@ RegisterNetEvent('pf_mech:vfx:oneshot', function(data)
     TriggerClientEvent('pf_mech:vfx:oneshot', -1, data)
 end)
 
--- NEW: Check if player has toolbox in inventory
-QBCore.Functions.CreateCallback('pf_mech:hasToolbox', function(source, cb)
-    local Player = QBCore.Functions.GetPlayer(source)
-    if not Player then cb(false); return end
-    
-    local item = Player.Functions.GetItemByName('toolbox')
-    cb(item ~= nil)
-end)
-
 -- =========================
 -- PREVIEW RECEIPT GENERATION
 -- =========================
@@ -1305,5 +1296,13 @@ RegisterNetEvent('pf_mech:coal:syncStop', function(netId)
     end
     
     TriggerClientEvent('pf_mech:coal:stopParticles', -1, netId)
+end)
+
+-- Sync vehicle upgrades to all clients
+RegisterNetEvent('pf-mechanicjob:server:syncUpgrade', function(data)
+    if not data or not data.vehicle then return end
+    
+    -- Broadcast to all clients to apply the upgrade
+    TriggerClientEvent('pf-mechanicjob:client:syncUpgrade', -1, data)
 end)
 

@@ -453,12 +453,11 @@ local function OpenMenuGeneric(menu)
     end
 end
 
--- FIX: inspection progressbar handler (open/close doors + welder prop) - REMOVE TOOLBOX CHECK
+-- FIX: inspection progressbar handler (open/close doors + welder prop)
 RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
     local veh = getRepairVehicle()
     if not veh then QBCore.Functions.Notify('No vehicle nearby','error'); return end
     
-    -- REMOVED: toolbox check for diagnostics
     local ped = PlayerPedId()
 
     local weldDict, weldAnim = "amb@world_human_welding@male@base", "base"
@@ -749,35 +748,6 @@ local function isDieselVehicle(veh)
     return Config.IsDieselCandidate(veh)
 end
 
--- Update your existing OpenMechanicToolsMenu function to include coal option
-local function OpenMechanicToolsMenu()
-    local ped = PlayerPedId()
-    local veh = GetVehiclePedIsIn(ped, false)
-    
-    local menu = {
-        { header = 'Mechanic Tools', isMenuHeader = true },
-        -- ...existing menu options...
-    }
-    
-    -- Add coal delete option if vehicle is diesel
-    if veh ~= 0 and isDieselVehicle(veh) then
-        local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
-        local coalState = CoalVehicles and CoalVehicles[plate] or false
-        
-        menu[#menu+1] = {
-            header = '🚛 Coal Delete',
-            txt = coalState and 'Currently: ENABLED (Rolling Coal)' or 'Currently: DISABLED',
-            params = {
-                event = 'pf_mech:toggleCoalDelete'
-            }
-        }
-    end
-    
-    menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
-    
-    exports['qb-menu']:openMenu(menu)
-end
-
 -- NEW: Toggle coal delete from toolbox menu
 RegisterNetEvent('pf_mech:toggleCoalDeleteToolbox', function(data)
     local veh = data.vehicle
@@ -916,11 +886,6 @@ RegisterNetEvent('pf_mech:client:runDiagnostics', function(data)
     end, function() -- Cancel
         QBCore.Functions.Notify('Scan cancelled', 'error')
     end)
-end)
-
--- Open tools menu event
-RegisterNetEvent('pf_mech:client:openTools', function()
-    OpenMechanicToolsMenu()
 end)
 
 -- Export for other resources

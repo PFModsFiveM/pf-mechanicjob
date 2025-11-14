@@ -40,7 +40,8 @@ client_scripts {
   'client/cosmetics.lua',
   'client/garage_sync.lua',  -- NEW
   'client/mileage_hud.lua',  -- NEW
-  'client/rolling_coal.lua'  -- NEW: Rolling coal visual effects
+  'client/rolling_coal.lua',  -- NEW: Rolling coal visual effects
+  'client/mechanictools.lua'  -- NEW: Upgrade display menu
 }
 
 server_scripts {

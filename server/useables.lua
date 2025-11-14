@@ -31,23 +31,6 @@ QBCore.Functions.CreateUseableItem('brake_pads', function(source)
     TriggerClientEvent('qb-core:client:use:brake_pads', source)
 end)
 
--- Make mechanic_tools usable (FIXED)
-QBCore.Functions.CreateUseableItem('mechanic_tools', function(source)
-    local Player = QBCore.Functions.GetPlayer(source)
-    if not Player then return end
-    
-    print('[SERVER DEBUG] mechanic_tools used by player ' .. source)
-    
-    -- Check if player is a mechanic
-    if not isAllowedJob(Player, 'mechanic_tools') then
-        TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
-        return
-    end
-    
-    -- Trigger the inspection event from tools_menu.lua
-    TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', source)
-end)
-
 -- Make alternator usable
 QBCore.Functions.CreateUseableItem('alternator', function(source)
     local Player = QBCore.Functions.GetPlayer(source)
@@ -193,14 +176,8 @@ QBCore.Functions.CreateUseableItem('mechanic_tools', function(source, item)
     local Player = QBCore.Functions.GetPlayer(source)
     if not Player then return end
     
-    -- Check if player is mechanic
-    if not Config.IsMechanicJob(Player.PlayerData.job.name) then
-        TriggerClientEvent('QBCore:Notify', source, 'You must be a mechanic', 'error')
-        return
-    end
-    
-    -- Open tools menu
-    TriggerClientEvent('pf_mech:client:openTools', source)
+    -- Trigger client event to open upgrade menu
+    TriggerClientEvent('pf-mechanicjob:client:openUpgradeMenu', source)
 end)
 
 -- Register diagnostic tool (alternative item)
@@ -258,4 +235,98 @@ end)
 
 QBCore.Functions.CreateUseableItem('dpf', function(src, item)
   TriggerClientEvent('QBCore:Client:UseItem', src, { name = 'dpf' })
+end)
+
+-- Register mechanic_tools as useable item
+QBCore.Functions.CreateUseableItem('mechanic_tools', function(source, item)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    
+    -- Trigger client event to open upgrade menu
+    TriggerClientEvent('pf-mechanicjob:client:openUpgradeMenu', source)
+end)
+
+-- Register all engine upgrade items
+for i = 1, 5 do
+    QBCore.Functions.CreateUseableItem('engine'..i, function(source, item)
+        TriggerClientEvent('pf-mechanicjob:client:useUpgradeItem', source, {
+            item = 'engine'..i,
+            modType = 11,
+            modIndex = i - 1,
+            label = 'Engine Upgrade Level '..i
+        })
+    end)
+end
+
+-- Register all brake upgrade items
+for i = 1, 3 do
+    QBCore.Functions.CreateUseableItem('brakes'..i, function(source, item)
+        TriggerClientEvent('pf-mechanicjob:client:useUpgradeItem', source, {
+            item = 'brakes'..i,
+            modType = 12,
+            modIndex = i - 1,
+            label = 'Brake Upgrade Level '..i
+        })
+    end)
+end
+
+-- Register all transmission upgrade items
+for i = 1, 3 do
+    QBCore.Functions.CreateUseableItem('transmission'..i, function(source, item)
+        TriggerClientEvent('pf-mechanicjob:client:useUpgradeItem', source, {
+            item = 'transmission'..i,
+            modType = 13,
+            modIndex = i - 1,
+            label = 'Transmission Upgrade Level '..i
+        })
+    end)
+end
+
+-- Register all suspension upgrade items
+for i = 1, 4 do
+    QBCore.Functions.CreateUseableItem('suspension'..i, function(source, item)
+        TriggerClientEvent('pf-mechanicjob:client:useUpgradeItem', source, {
+            item = 'suspension'..i,
+            modType = 15,
+            modIndex = i - 1,
+            label = 'Suspension Upgrade Level '..i
+        })
+    end)
+end
+
+-- Register all armor upgrade items
+for i = 1, 5 do
+    QBCore.Functions.CreateUseableItem('armor'..i, function(source, item)
+        TriggerClientEvent('pf-mechanicjob:client:useUpgradeItem', source, {
+            item = 'armor'..i,
+            modType = 16,
+            modIndex = i - 1,
+            label = 'Armor Upgrade Level '..i
+        })
+    end)
+end
+
+-- Register turbo
+QBCore.Functions.CreateUseableItem('turbo', function(source, item)
+    TriggerClientEvent('pf-mechanicjob:client:useUpgradeItem', source, {
+        item = 'turbo',
+        modType = 18,
+        modIndex = 0,
+        label = 'Turbo',
+        isTurbo = true
+    })
+end)
+
+-- Server event to consume upgrade item after successful installation
+RegisterNetEvent('pf-mechanicjob:server:consumeUpgradeItem', function(itemName)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item then return end
+    
+    if Player.Functions.RemoveItem(itemName, 1) then
+        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], 'remove', 1)
+    end
 end)
