@@ -175,5 +175,3 @@ Locale:Add({
   ['dpf_enable']    = 'DPF removed: rolling coal enabled',
   ['dpf_disable']   = 'DPF installed: rolling coal disabled'
 })
-
-return Locale

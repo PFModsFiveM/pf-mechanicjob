@@ -32,15 +32,13 @@ exports('IsCoalActiveForVehicle', function(veh)
   return CoalVehicles[plate] == true
 end)
 
--- Sync coal state from server (FIX: Force immediate update)
+-- Sync coal state from server
 RegisterNetEvent('pf_mech:syncCoalDelete', function(plate, enabled)
   plate = tostring(plate or ''):gsub('%s+', ''):upper()
   if plate == '' then return end
-  
   CoalVehicles[plate] = enabled
-  
   if Config.Debug then
-    print(string.format('[COAL SYNC] %s -> %s (DPF %s)', plate, tostring(enabled), enabled and 'REMOVED' or 'INSTALLED'))
+    print(string.format('[COAL SYNC] %s -> %s', plate, tostring(enabled)))
   end
 end)
 
@@ -229,19 +227,6 @@ CreateThread(function()
     end
     ::continue::
   end
-end)
-
--- FIX: Update DPF result handler to force state update
-RegisterNetEvent('pf_mech:dpf:result', function(action, success, msg, plate, state)
-    if msg then QBCore.Functions.Notify(msg, success and 'success' or 'error', 4000) end
-    if plate then
-        plate = tostring(plate):gsub('%s+', ''):upper()
-        CoalVehicles[plate] = state and true or false
-        
-        if Config.Debug then
-            print(string.format('[DPF RESULT] %s: DPF %s, state=%s', plate, action, tostring(state)))
-        end
-    end
 end)
 
 -- Debug command

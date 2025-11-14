@@ -32,26 +32,27 @@ shared_scripts {
 }
 
 client_scripts {
-  'client/tools_menu.lua',  -- MUST remain first for early exports
+  -- 'client/diagnostic/diagnostics.lua',  -- REMOVED: prevents immediate simple menu
+  'client/tools_menu.lua',
   'client/damage.lua',
-  'client/preview.lua',        -- ADDED: separated preview system
+  'client/preview.lua',
   'client/main.lua',
   'client/minigames.lua',
   'client/cosmetics.lua',
-  'client/garage_sync.lua',  -- NEW
-  'client/mileage_hud.lua',  -- NEW
-  'client/rolling_coal.lua',  -- NEW: Rolling coal visual effects
-  'client/mechanictools.lua'  -- NEW: Upgrade display menu
+  'client/garage_sync.lua',
+  'client/mileage_hud.lua',
+  'client/rolling_coal.lua',
+  'client/mechanictools.lua'
 }
 
 server_scripts {
   '@oxmysql/lib/MySQL.lua',
+  'server/diagnostics.lua',            -- NEW: server-side diagnostics item/use
   'server/main.lua',
   'server/repair.lua',
   'server/useables.lua',
   'server/consumables.lua',
-  'server/garage_sync.lua',  -- NEW
-  'server/rolling_coal.lua'  -- ADD: required for DPF callbacks/events
+  'server/garage_sync.lua'  -- NEW
 }
 
 escrow_ignore 'config.lua'

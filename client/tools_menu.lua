@@ -1,6 +1,25 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 print('[TOOLS_MENU] Client script loaded')
 
+-- SAFE FALLBACK: hasToolbox (always true if no implementation available)
+if type(hasToolbox) ~= 'function' then
+    function hasToolbox(cb)
+        -- Try QBCore:HasItem if present; else allow
+        if QBCore and QBCore.Functions and QBCore.Functions.TriggerCallback then
+            QBCore.Functions.TriggerCallback('QBCore:HasItem', function(has)
+                if not has then
+                    QBCore.Functions.Notify(L and L('need_toolbox') or 'You need a toolbox to do mechanic work', 'error')
+                    cb(false)
+                else
+                    cb(true)
+                end
+            end, 'toolbox')
+        else
+            cb(true)
+        end
+    end
+end
+
 -- ADD: door helpers (must be before usage)
 local function OpenAllDoors(veh)
     if not veh or not DoesEntityExist(veh) then return end
@@ -455,8 +474,13 @@ end
 
 -- FIX: inspection progressbar handler (open/close doors + welder prop)
 RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
+    if Config.Debug then print('[TOOLS_MENU] openToolsMenu event received') end
     local veh = getRepairVehicle()
-    if not veh then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+    if not veh then
+        QBCore.Functions.Notify('No vehicle nearby','error')
+        if Config.Debug then print('[TOOLS_MENU] Abort: no vehicle') end
+        return
+    end
     
     local ped = PlayerPedId()
 
@@ -464,16 +488,17 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
     RequestAnimDict(weldDict) while not HasAnimDictLoaded(weldDict) do Wait(0) end
 
     OpenAllDoors(veh)
-
     TaskPlayAnim(ped, weldDict, weldAnim, 8.0, -8.0, -1, 49, 0, false, false, false)
     StartWeld(ped)
 
+    -- Fallback: if no progressbar, still open the menu
     if not QBCore.Functions.Progressbar then
-        Wait(3000)
+        Wait(1500)
         ClearPedTasks(ped)
         StopWeld()
         CloseAllDoors(veh)
-        QBCore.Functions.Notify('Progressbar not available','error')
+        -- Open diagnostics menu directly
+        TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
         return
     end
 
@@ -500,6 +525,14 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu', function()
             QBCore.Functions.Notify('Inspection cancelled','error')
         end
     )
+end)
+
+-- Direct fallback (manual menu open without inspection) for debugging
+RegisterNetEvent('pf_mechanicjob:client:openToolsMenu:direct', function()
+    local veh = getRepairVehicle()
+    if not veh then QBCore.Functions.Notify('No vehicle nearby','error'); return end
+    if Config.Debug then print('[TOOLS_MENU] Direct menu open fallback') end
+    TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
 end)
 
 -- REPLACE: diagnostics menu build (fill placeholders)
@@ -726,7 +759,6 @@ RegisterNetEvent('pf_mech:vfx:oneshot', function(data)
 end)
 
 -- REMOVE duplicated welding helpers previously at bottom; they are now hoisted above.
--- ...existing code...
 
 -- Helper: Clean up clipboard when menu closes (also stop welder and mark menu closed)
 RegisterNetEvent('qb-menu:client:closeMenu', function()
@@ -880,7 +912,7 @@ RegisterNetEvent('pf_mech:client:runDiagnostics', function(data)
         
         diagMenu[#diagMenu+1] = { header = 'Back', params = { event = 'pf_mech:client:openTools' } }
         diagMenu[#diagMenu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
-        
+
         exports['qb-menu']:openMenu(diagMenu)
         
     end, function() -- Cancel
@@ -888,5 +920,8 @@ RegisterNetEvent('pf_mech:client:runDiagnostics', function(data)
     end)
 end)
 
--- Export for other resources
+-- Export for other resources (define wrapper to avoid nil export)
+local function OpenMechanicToolsMenu()
+    TriggerEvent('pf-mechanicjob:client:openToolsMenu')
+end
 exports('OpenMechanicTools', OpenMechanicToolsMenu)
