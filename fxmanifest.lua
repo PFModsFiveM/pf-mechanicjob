@@ -50,7 +50,8 @@ server_scripts {
   'server/repair.lua',
   'server/useables.lua',
   'server/consumables.lua',
-  'server/garage_sync.lua'  -- NEW
+  'server/garage_sync.lua',  -- NEW
+  'server/rolling_coal.lua'  -- ADD: required for DPF callbacks/events
 }
 
 escrow_ignore 'config.lua'

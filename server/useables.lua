@@ -150,6 +150,28 @@ QBCore.Functions.CreateUseableItem('coolant', function(source, item)
 end)
 
 -- ============================================================================
+-- DPF ITEM
+-- ============================================================================
+QBCore.Functions.CreateUseableItem(Config.DPFItem or 'dpf', function(source, item)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    
+    if Config.Debug then
+        print(string.format('[DPF] Player %s used DPF item', source))
+    end
+    
+    -- Client will handle the actual installation logic
+    TriggerClientEvent('pf-mechanicjob:client:useDPFItem', source)
+end)
+
+-- Make the DPF item useable to trigger install from inventory
+QBCore.Functions.CreateUseableItem(Config.DPFItem or 'dpf', function(source, item)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    TriggerClientEvent('pf-mechanicjob:client:useDPFItem', source)
+end)
+
+-- ============================================================================
 -- SERVER CALLBACKS
 -- ============================================================================
 -- Consume upgrade item after successful installation
@@ -206,60 +228,7 @@ RegisterNetEvent('pf-mechanicjob:server:returnUpgradeItem', function(itemName)
     end
 end)
 
--- ============================================================================
--- ANIMATIONS
--- ============================================================================
-local function playRepairAnimation(source)
-    local ped = GetPlayerPed(source)
-    if not ped then return end
-    
-    -- Load the repair animation dictionary
-    QBCore.Functions.RequestAnimDict("mini@repair")
-    
-    -- Play the repair animation
-    TaskPlayAnim(ped, "mini@repair", "fixing_a_ped", 8.0, -8.0, -1, 50, 0, false, false, false)
-end
-
--- ============================================================================
--- REPAIR ITEM USAGE
--- ============================================================================
-RegisterNetEvent('pf-mechanicjob:server:useRepairItem', function(itemName)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-    
-    -- Check if the player has the repair item
-    local item = Player.Functions.GetItemByName(itemName)
-    if not item then 
-        TriggerClientEvent('QBCore:Notify', src, 'You don\'t have that item', 'error')
-        return 
-    end
-    
-    -- Start the repair animation
-    playRepairAnimation(src)
-    
-    -- Trigger the repair process on the client
-    TriggerClientEvent('pf-mechanicjob:client:startRepair', src, itemName)
-end)
-
--- ============================================================================
--- UPGRADE ITEM USAGE
--- ============================================================================
-RegisterNetEvent('pf-mechanicjob:server:useUpgradeItem', function(itemName)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-    
-    -- Check if the player has the upgrade item
-    local item = Player.Functions.GetItemByName(itemName)
-    if not item then 
-        TriggerClientEvent('QBCore:Notify', src, 'You don\'t have that item', 'error')
-        return 
-    end
-    
-    -- Start the repair animation
-    playRepairAnimation(src)
-    
-    -- Trigger the upgrade process on the client
-    TriggerClientEvent('pf-mechanicjob:client:startUpgrade', src, itemName)
+-- Sync upgrade to all clients
+RegisterNetEvent('pf-mechanicjob:server:syncUpgrade', function(data)
+    TriggerClientEvent('pf-mechanicjob:client:syncUpgrade', -1, data)
 end)

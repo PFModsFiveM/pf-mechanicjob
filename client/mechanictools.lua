@@ -287,6 +287,33 @@ local function DoProgress(label, ms, dict, anim)
     return true
 end
 
+-- Helper: Get normalized plate
+local function _GetPlate(veh)
+    if not veh or not DoesEntityExist(veh) then return nil end
+    return GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
+end
+
+-- Helper: Check if DPF is removed (FIX: Access CoalVehicles from rolling_coal.lua properly)
+local function IsDPFRemoved(veh)
+    local plate = _GetPlate(veh)
+    if not plate then return false end
+    
+    -- Wait for state to sync
+    Wait(100)
+    
+    -- Try to get state from exports (more reliable)
+    local removed = false
+    pcall(function()
+        removed = exports['pf-mechanicjob']:IsCoalActiveForVehicle(veh)
+    end)
+    
+    if Config.Debug then
+        print(string.format('[DPF CHECK] plate=%s removed=%s', plate, tostring(removed)))
+    end
+    
+    return removed
+end
+
 -- Open upgrade display menu
 RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
     local veh = nearbyVeh(6.0)
@@ -362,6 +389,22 @@ RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
                 params = {}
             }
         end
+    end
+    
+    -- NEW: Add DPF section for diesel vehicles
+    if Config.IsDieselCandidate(veh) then
+        menu[#menu+1] = { header = '--- Diesel Systems ---', isMenuHeader = true }
+        
+        local dpfRemoved = IsDPFRemoved(veh)
+        
+        menu[#menu+1] = {
+            header = 'Diesel Particulate Filter (DPF)',
+            txt = dpfRemoved and '❌ Removed - Click to reinstall' or '✅ Installed - Click to remove',
+            params = {
+                event = dpfRemoved and 'pf-mechanicjob:client:installDPF' or 'pf-mechanicjob:client:removeDPF',
+                args = { vehicle = veh, plate = plate }
+            }
+        }
     end
     
     -- Add cosmetics button
@@ -491,6 +534,178 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
     -- Reopen menu to show updated state
     Wait(200)
     TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
+end)
+
+-- NEW: Handler for removing DPF from menu
+RegisterNetEvent('pf-mechanicjob:client:removeDPF', function(data)
+    local veh = data and data.vehicle or nearbyVeh(6.0)
+    local plate = data and data.plate or _GetPlate(veh)
+    
+    if veh == 0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return
+    end
+    
+    if not Config.IsDieselCandidate(veh) then
+        QBCore.Functions.Notify('Not a diesel vehicle', 'error')
+        return
+    end
+    
+    if IsDPFRemoved(veh) then
+        QBCore.Functions.Notify('DPF already removed', 'error')
+        return
+    end
+    
+    -- Check if player is outside vehicle
+    local ped = PlayerPedId()
+    if IsPedInAnyVehicle(ped, false) then
+        QBCore.Functions.Notify('You must be outside the vehicle', 'error')
+        return
+    end
+    
+    -- Check if engine is off
+    if GetIsVehicleEngineRunning(veh) then
+        QBCore.Functions.Notify('Turn the engine off first', 'error')
+        return
+    end
+    
+    -- Use proper repair animation
+    local animDict = 'mini@repair'
+    local animName = 'fixing_a_ped'
+    
+    RequestAnimDict(animDict)
+    while not HasAnimDictLoaded(animDict) do Wait(0) end
+    
+    TaskPlayAnim(ped, animDict, animName, 8.0, -8.0, -1, 49, 0.0, false, false, false)
+    
+    -- Show progress bar
+    if not DoProgress('Removing DPF...', Config.DPFRemoveTime or 6000, animDict, animName) then
+        ClearPedTasks(ped)
+        QBCore.Functions.Notify('DPF removal cancelled', 'error')
+        return
+    end
+    
+    ClearPedTasks(ped)
+    
+    -- Tell server to remove DPF (server will give back the item)
+    TriggerServerEvent('pf_mech:dpf:remove', plate)
+    
+    QBCore.Functions.Notify('🚛 DPF removed! You received the DPF item', 'success', 5000)
+    
+    -- Wait for server to sync state
+    Wait(1000)
+    
+    -- Reopen menu to show updated state
+    TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
+end)
+
+-- NEW: Handler for using DPF item directly
+RegisterNetEvent('pf-mechanicjob:client:useDPFItem', function()
+    local veh = nearbyVeh(6.0)
+    
+    if veh == 0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return
+    end
+    
+    if not Config.IsDieselCandidate(veh) then
+        QBCore.Functions.Notify('Not a diesel vehicle', 'error')
+        return
+    end
+    
+    local plate = _GetPlate(veh)
+    
+    if not IsDPFRemoved(veh) then
+        QBCore.Functions.Notify('DPF already installed', 'error')
+        return
+    end
+    
+    -- Use the same installation handler
+    TriggerEvent('pf-mechanicjob:client:installDPF', {
+        vehicle = veh,
+        plate = plate
+    })
+end)
+
+-- FIXED: Handler for installing DPF from menu
+RegisterNetEvent('pf-mechanicjob:client:installDPF', function(data)
+    local veh = data and data.vehicle or nearbyVeh(6.0)
+    local plate = data and data.plate or _GetPlate(veh)
+    
+    if veh == 0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return
+    end
+    
+    if not Config.IsDieselCandidate(veh) then
+        QBCore.Functions.Notify('Not a diesel vehicle', 'error')
+        return
+    end
+    
+    if not IsDPFRemoved(veh) then
+        QBCore.Functions.Notify('DPF already installed', 'error')
+        -- FIXED: Reopen menu instead of closing
+        Wait(200)
+        TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
+        return
+    end
+    
+    -- Check if player is outside vehicle
+    local ped = PlayerPedId()
+    if IsPedInAnyVehicle(ped, false) then
+        QBCore.Functions.Notify('You must be outside the vehicle', 'error')
+        return
+    end
+    
+    -- Check if engine is off
+    if GetIsVehicleEngineRunning(veh) then
+        QBCore.Functions.Notify('Turn the engine off first', 'error')
+        return
+    end
+    
+    -- Check if player has DPF item (use proper server callback name)
+    QBCore.Functions.TriggerCallback('pf_mech:hasDPFItem', function(hasDPF)
+        if not hasDPF then
+            QBCore.Functions.Notify('You need a DPF filter to install it!', 'error')
+            -- FIXED: Reopen menu so player can see the error and try again
+            Wait(200)
+            TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
+            return
+        end
+        
+        -- Use proper repair animation
+        local animDict = 'mini@repair'
+        local animName = 'fixing_a_ped'
+        
+        RequestAnimDict(animDict)
+        while not HasAnimDictLoaded(animDict) do Wait(0) end
+        
+        TaskPlayAnim(ped, animDict, animName, 8.0, -8.0, -1, 49, 0.0, false, false, false)
+        
+        -- Show progress bar
+        if not DoProgress('Installing DPF...', Config.DPFInstallTime or 6000, animDict, animName) then
+            ClearPedTasks(ped)
+            QBCore.Functions.Notify('DPF installation cancelled', 'error')
+            -- Reopen menu after cancel
+            Wait(200)
+            TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
+            return
+        end
+        
+        ClearPedTasks(ped)
+        
+        -- Tell server to install DPF (server will consume the item)
+        TriggerServerEvent('pf_mech:dpf:install', plate)
+        
+        QBCore.Functions.Notify('🚛 DPF installed! Rolling coal disabled', 'success', 5000)
+        
+        -- Wait for server to sync state
+        Wait(1000)
+        
+        -- Reopen menu to show updated state
+        TriggerEvent('pf-mechanicjob:client:openUpgradeMenu')
+        
+    end)
 end)
 
 -- Debug command (only if Config.Debug)
