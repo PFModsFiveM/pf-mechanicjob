@@ -890,14 +890,26 @@ RegisterNetEvent('pf-mechanicjob:client:useUpgradeItem', function(data)
         end
     end
     
+    -- FIXED: Use proper repair animation
+    local animDict = 'mini@repair'
+    local animName = 'fixing_a_ped'
+    
+    RequestAnimDict(animDict)
+    while not HasAnimDictLoaded(animDict) do Wait(0) end
+    
+    TaskPlayAnim(ped, animDict, animName, 8.0, -8.0, -1, 49, 0.0, false, false, false)
+    
     -- Show progress bar
     local progressTime = 8000 -- 8 seconds
     local progressLabel = 'Installing ' .. data.label .. '...'
     
-    if not DoProgress(progressLabel, progressTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+    if not DoProgress(progressLabel, progressTime, animDict, animName) then
+        ClearPedTasks(ped)
         QBCore.Functions.Notify('Installation cancelled', 'error')
         return
     end
+    
+    ClearPedTasks(ped)
     
     -- Install the upgrade
     if data.isTurbo then
@@ -935,4 +947,188 @@ RegisterNetEvent('pf-mechanicjob:client:syncUpgrade', function(data)
     else
         SetVehicleMod(veh, data.modType, data.modIndex, false)
     end
+end)
+
+-- NEW: Handler for using repair items directly
+RegisterNetEvent('pf-mechanicjob:client:useRepairItem', function(partKey)
+    local ped = PlayerPedId()
+    
+    -- Must be outside vehicle
+    if IsPedInAnyVehicle(ped, false) then
+        QBCore.Functions.Notify('You must be outside the vehicle', 'error')
+        return
+    end
+    
+    -- Find nearby vehicle
+    local veh = nearbyVeh(3.5)
+    if veh == 0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return
+    end
+    
+    -- Check if engine is off
+    if GetIsVehicleEngineRunning(veh) then
+        QBCore.Functions.Notify('Turn the engine off first', 'error')
+        return
+    end
+    
+    -- Map partKey to item name
+    local itemMap = {
+        alternator = 'alternator',
+        sparkplugs = 'sparkplugs',
+        carbattery = 'carbattery',
+        oil = 'engine_oil',
+        oil_filter = 'oil_filter',
+        brakes = 'brake_pads',
+        suspension = 'susp_arm',
+        axle = 'axleparts',
+        engine_part = 'engine_part',
+        body_part = 'body_part',
+        tire_new = 'tire_new',
+        fuel_injector = 'fuel_injector',
+        powersteeringpump = 'powersteeringpump',
+        radiator = 'radiator',
+        power_steering_fluid = 'power_steering_fluid',
+        transmissionfluid = 'transmissionfluid',
+        brakefluid = 'brakefluid',
+        coolant = 'coolant'
+    }
+    
+    local itemName = itemMap[partKey] or partKey
+    
+    -- Get part label
+    local partLabels = {
+        alternator = 'Alternator',
+        sparkplugs = 'Spark Plugs',
+        carbattery = 'Car Battery',
+        oil = 'Engine Oil',
+        oil_filter = 'Oil Filter',
+        brakes = 'Brake Pads',
+        suspension = 'Suspension',
+        axle = 'Axle',
+        engine_part = 'Engine',
+        body_part = 'Body',
+        tire_new = 'Tire',
+        fuel_injector = 'Fuel Injector',
+        powersteeringpump = 'Power Steering Pump',
+        radiator = 'Radiator',
+        power_steering_fluid = 'Power Steering Fluid',
+        transmissionfluid = 'Transmission Fluid',
+        brakefluid = 'Brake Fluid',
+        coolant = 'Coolant'
+    }
+    
+    local partLabel = partLabels[partKey] or partKey
+    
+    -- Special handling for tires
+    if partKey == 'tire_new' then
+        -- Find damaged wheel
+        local wheels = {0, 1, 2, 3, 4, 5}
+        local damagedWheel = nil
+        
+        for _, idx in ipairs(wheels) do
+            if IsWheelDamaged and IsWheelDamaged(veh, idx) then
+                damagedWheel = idx
+                break
+            end
+        end
+        
+        if not damagedWheel then
+            QBCore.Functions.Notify('No damaged tires found', 'error')
+            return
+        end
+        
+        -- Repair tire
+        local animDict = 'mini@repair'
+        local animName = 'fixing_a_ped'
+        
+        RequestAnimDict(animDict)
+        while not HasAnimDictLoaded(animDict) do Wait(0) end
+        
+        TaskPlayAnim(ped, animDict, animName, 8.0, -8.0, -1, 49, 0.0, false, false, false)
+        
+        if not DoProgress('Replacing tire...', 7000, animDict, animName) then
+            ClearPedTasks(ped)
+            QBCore.Functions.Notify('Repair cancelled', 'error')
+            return
+        end
+        
+        ClearPedTasks(ped)
+        
+        -- Fix tire
+        SetVehicleTyreFixed(veh, damagedWheel)
+        
+        -- Consume item
+        TriggerServerEvent('pf-mechanicjob:server:consumeRepairItem', itemName, 1)
+        
+        QBCore.Functions.Notify('Tire replaced successfully', 'success', 3000)
+        return
+    end
+    
+    -- Get current damage
+    local state = Entity(veh).state
+    local damage = state.partDamage or {}
+    local currentDamage = tonumber(damage[partKey]) or 0
+    
+    if currentDamage <= 0 then
+        QBCore.Functions.Notify(partLabel .. ' is already in perfect condition', 'error')
+        return
+    end
+    
+    -- Calculate items needed (from config)
+    local maxItems = 1
+    if partKey == 'engine_part' then maxItems = 5
+    elseif partKey == 'body_part' then maxItems = 5
+    elseif partKey == 'sparkplugs' then maxItems = 8
+    elseif partKey == 'brakes' then maxItems = 4
+    elseif partKey == 'suspension' then maxItems = 4
+    elseif partKey == 'axle' then maxItems = 4
+    elseif partKey == 'fuel_injector' then maxItems = 4
+    end
+    
+    local itemsNeeded = math.ceil((currentDamage / 100) * maxItems)
+    itemsNeeded = math.max(1, math.min(maxItems, itemsNeeded))
+    
+    -- Perform repair with animation
+    local animDict = 'mini@repair'
+    local animName = 'fixing_a_ped'
+    
+    RequestAnimDict(animDict)
+    while not HasAnimDictLoaded(animDict) do Wait(0) end
+    
+    TaskPlayAnim(ped, animDict, animName, 8.0, -8.0, -1, 49, 0.0, false, false, false)
+    
+    local progressTime = 5000 + (itemsNeeded * 1000) -- Base 5s + 1s per item
+    if not DoProgress('Repairing ' .. partLabel .. '...', progressTime, animDict, animName) then
+        ClearPedTasks(ped)
+        QBCore.Functions.Notify('Repair cancelled', 'error')
+        return
+    end
+    
+    ClearPedTasks(ped)
+    
+    -- Apply repair
+    damage[partKey] = 0
+    
+    -- Special handling for engine/body
+    if partKey == 'engine_part' then
+        SetVehicleEngineHealth(veh, 1000.0)
+    elseif partKey == 'body_part' then
+        SetVehicleBodyHealth(veh, 1000.0)
+    end
+    
+    -- Update state
+    state:set('partDamage', damage, true)
+    
+    -- Consume items
+    TriggerServerEvent('pf-mechanicjob:server:consumeRepairItem', itemName, itemsNeeded)
+    
+    -- Reset brake cache if repairing brakes
+    if partKey == 'brakes' or partKey == 'brakefluid' then
+        if exports['pf-mechanicjob'] and exports['pf-mechanicjob'].ResetBrakeCache then
+            exports['pf-mechanicjob']:ResetBrakeCache(veh)
+        end
+    end
+    
+    QBCore.Functions.Notify(partLabel .. ' repaired successfully! (' .. itemsNeeded .. ' parts used)', 'success', 5000)
 end)

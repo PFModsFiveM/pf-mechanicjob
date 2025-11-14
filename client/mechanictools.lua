@@ -443,14 +443,26 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
         end
     end
     
+    -- FIXED: Use proper repair animation
+    local animDict = 'mini@repair'
+    local animName = 'fixing_a_ped'
+    
+    RequestAnimDict(animDict)
+    while not HasAnimDictLoaded(animDict) do Wait(0) end
+    
+    TaskPlayAnim(ped, animDict, animName, 8.0, -8.0, -1, 49, 0.0, false, false, false)
+    
     -- Show progress bar
     local progressTime = 6000 -- 6 seconds
     local progressLabel = string.format('Removing %s upgrade...', upgradeType)
     
-    if not DoProgress(progressLabel, progressTime, 'amb@world_human_vehicle_mechanic@male@base', 'base') then
+    if not DoProgress(progressLabel, progressTime, animDict, animName) then
+        ClearPedTasks(ped)
         QBCore.Functions.Notify('Downgrade cancelled', 'error')
         return
     end
+    
+    ClearPedTasks(ped)
     
     -- Apply the downgrade
     SetVehicleModKit(veh, 0)
