@@ -368,37 +368,31 @@ RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
     
     for _, key in ipairs(upgradeOrder) do
         local upgrade = upgrades[key]
-        
         if upgrade and upgrade.max > 0 then
+            -- CHANGED: allow removal from any installed level (>=0)
+            local canDowngrade = (key == 'turbo' and upgrade.current >= 0) or (key ~= 'turbo' and upgrade.current >= 0)
             local header = upgrade.label
             local txt = upgrade.levelName
             
             -- Determine if upgrade can be downgraded
-            local canDowngrade = false
-            if key == 'turbo' then
-                -- Turbo: can remove if installed
-                canDowngrade = upgrade.current >= 0
-            else
-                -- Other upgrades: can downgrade if above level 1 (index 0)
-                canDowngrade = upgrade.current > 0
-            end
+            local downgradeParams = canDowngrade and {
+                event = 'pf-mechanicjob:client:downgradeUpgrade',
+                args = { 
+                    vehicle = veh, 
+                    upgradeType = key,
+                    modType = key == 'engine' and 11 or 
+                             key == 'brakes' and 12 or 
+                             key == 'transmission' and 13 or 
+                             key == 'suspension' and 15 or 
+                             key == 'turbo' and 18 or 11,
+                    currentLevel = upgrade.current
+                }
+            } or {}
             
             menu[#menu+1] = {
                 header = header,
                 txt = txt,
-                params = canDowngrade and {
-                    event = 'pf-mechanicjob:client:downgradeUpgrade',
-                    args = { 
-                        vehicle = veh, 
-                        upgradeType = key,
-                        modType = key == 'engine' and 11 or 
-                                 key == 'brakes' and 12 or 
-                                 key == 'transmission' and 13 or 
-                                 key == 'suspension' and 15 or 
-                                 key == 'turbo' and 18 or 11,
-                        currentLevel = upgrade.current
-                    }
-                } or {}
+                params = downgradeParams
             }
         else
             -- Upgrade not available for this vehicle
@@ -479,17 +473,17 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
     local upgradeType = data.upgradeType
     local modType = data.modType
     local currentLevel = data.currentLevel
-    
-    -- Determine new level and item to return
+
+    -- CHANGED: always revert to stock (-1) for non-turbo
     local newLevel = -1
     local itemToReturn = nil
-    
+
     if upgradeType == 'turbo' then
         newLevel = -1
         itemToReturn = 'turbo'
     else
-        newLevel = math.max(0, currentLevel - 1)
-        
+        -- Return the exact item for the level being removed
+        -- currentLevel (0-based) + 1 gives item suffix
         if upgradeType == 'engine' then
             itemToReturn = 'engine' .. (currentLevel + 1)
         elseif upgradeType == 'brakes' then
@@ -526,8 +520,8 @@ RegisterNetEvent('pf-mechanicjob:client:downgradeUpgrade', function(data)
         ToggleVehicleMod(veh, 18, false)
         QBCore.Functions.Notify('Turbo removed', 'success', 3000)
     else
-        SetVehicleMod(veh, modType, newLevel, false)
-        QBCore.Functions.Notify(string.format('%s downgraded to Level %d', upgradeType:gsub("^%l", string.upper), newLevel + 1), 'success', 3000)
+        SetVehicleMod(veh, modType, newLevel, false)  -- CHANGED: directly to stock
+        QBCore.Functions.Notify(string.format('%s removed (reverted to stock)', upgradeType:gsub("^%l", string.upper)), 'success', 3000)
     end
     
     if itemToReturn then
@@ -710,7 +704,8 @@ local function buildMechanicToolsMenu(veh)
     for _, key in ipairs(perfOrder) do
         local up = upgrades[key]
         if up then
-            local canDown = (key == 'turbo' and up.current >= 0) or (key ~= 'turbo' and up.current > 0)
+            -- CHANGED: allow removal from any installed level (>=0)
+            local canDown = (key == 'turbo' and up.current >= 0) or (key ~= 'turbo' and up.current >= 0)
             
             local header = up.label
             local txt

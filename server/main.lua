@@ -620,13 +620,41 @@ for _, item in ipairs(performanceParts) do
     QBCore.Functions.CreateUseableItem(item, function(source)
         local Player = QBCore.Functions.GetPlayer(source)
         if Player.PlayerData.job.name == "mechanic" then
-            -- This will trigger the client-side event to handle the part installation
-            TriggerClientEvent('pf_mech:tryUsePart', source, item)
+            -- CHANGED: trigger correct client performance handler
+            TriggerClientEvent('pf-mechanicjob:client:usePerformanceItem', source, item)
         else
             TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
         end
     end)
 end
+
+-- NEW: fast lookup set
+local PerformancePartsSet = {}
+for _, v in ipairs(performanceParts) do PerformancePartsSet[v] = true end
+
+-- NEW: return removed upgrade item (called from client downgrade)
+RegisterNetEvent('pf-mechanicjob:server:returnUpgradeItem', function(itemName)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    itemName = tostring(itemName or '')
+    if itemName == '' then return end
+    if not PerformancePartsSet[itemName] then
+        if Config.Debug then
+            print('[MECH RETURN] Invalid item requested: '..itemName)
+        end
+        return
+    end
+    -- Give back one item
+    Player.Functions.AddItem(itemName, 1)
+    if QBCore.Shared.Items[itemName] then
+        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], 'add', 1)
+    end
+    TriggerClientEvent('QBCore:Notify', src, ('Returned %s'):format(itemName), 'success')
+    if Config.Debug then
+        print(('[MECH RETURN] Gave %s back to %d'):format(itemName, src))
+    end
+end)
 
 RegisterNetEvent('pf_mech:usePart', function(itemName, vehNetId, jobId, px, py, pz, extra)
     local src = source

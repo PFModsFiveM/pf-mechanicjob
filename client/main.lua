@@ -1095,3 +1095,8 @@ RegisterCommand('dpfmenu', function()
   if veh == 0 then QBCore.Functions.Notify('No vehicle','error'); return end
   TriggerEvent('QBCore:Client:UseItem', { name='diagnostics_tool' })
 end, false)
+
+-- COMPAT: older server scripts might still emit 'pf_mech:tryUsePart'
+RegisterNetEvent('pf_mech:tryUsePart', function(itemName)
+    TriggerEvent('pf-mechanicjob:client:usePerformanceItem', itemName)
+end)
