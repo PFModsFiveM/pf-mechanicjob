@@ -190,17 +190,8 @@ local function openCosmeticsMenu(veh)
         local headerText = ('%s - %s'):format(cosmetic.label, bracket)
         menu[#menu+1] = {
             header = headerText,
-            txt = cosmetic.isToggle and 'Toggle option' or (cosmetic.count > 0 and 'View / apply options' or 'No variants'),
-            params = {
-                event = 'pf-mechanicjob:client:viewCosmeticMod',
-                args = {
-                    vehicle = veh,
-                    modType = cosmetic.modType,
-                    count = cosmetic.count,
-                    isToggle = cosmetic.isToggle,
-                    label = cosmetic.label
-                }
-            }
+            txt = 'Options available',  -- CHANGED: display only
+            params = {}                 -- CHANGED: non-clickable
         }
     end
 
