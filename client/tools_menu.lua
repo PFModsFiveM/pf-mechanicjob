@@ -438,12 +438,14 @@ local function OpenMenuGeneric(menu)
             if item.isMenuHeader then
                 if item.header then title = item.header end
             else
+                local hasEvent = (item.params and item.params.event)
                 options[#options+1] = {
                     title = item.header or '',
                     description = item.txt or '',
-                    disabled = not (item.params and item.params.event),
+                    icon = item.icon,
+                    disabled = not hasEvent,
                     onSelect = function()
-                        if item.params and item.params.event then
+                        if hasEvent then
                             TriggerEvent(item.params.event, item.params.args)
                         end
                     end

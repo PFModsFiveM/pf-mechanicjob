@@ -177,43 +177,39 @@ local function openCosmeticsMenu(veh)
     
     local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
     local modelName = GetDisplayNameFromVehicleModel(GetEntityModel(veh))
-    local displayName = GetLabelText(modelName)
-    if displayName == 'NULL' then displayName = modelName end
-    
+    local displayName = GetLabelText(modelName); if displayName == 'NULL' then displayName = modelName end
+
     local menu = {
-        {
-            header = 'Available Cosmetics',
-            txt = string.format('%s | Plate: %s', displayName, plate),
-            isMenuHeader = true
-        }
+        { header = 'Available Cosmetics', txt = string.format('%s | Plate: %s', displayName, plate), isMenuHeader = true }
     }
-    
-    -- Sort cosmetics by label
+
     table.sort(cosmetics, function(a, b) return a.label < b.label end)
-    
-    -- UPDATED: Show "<Label> - [ X Options ]" and make rows non-clickable
+
     for _, cosmetic in ipairs(cosmetics) do
         local bracket = cosmetic.isToggle and '[ On/Off ]' or ('[ %d Options ]'):format(cosmetic.count)
         local headerText = ('%s - %s'):format(cosmetic.label, bracket)
-
         menu[#menu+1] = {
             header = headerText,
-            txt = '',
-            params = {}  -- non-clickable
+            txt = cosmetic.isToggle and 'Toggle option' or (cosmetic.count > 0 and 'View / apply options' or 'No variants'),
+            params = {
+                event = 'pf-mechanicjob:client:viewCosmeticMod',
+                args = {
+                    vehicle = veh,
+                    modType = cosmetic.modType,
+                    count = cosmetic.count,
+                    isToggle = cosmetic.isToggle,
+                    label = cosmetic.label
+                }
+            }
         }
     end
-    
-    menu[#menu+1] = {
-        header = 'Back',
-        params = { event = 'pf-mechanicjob:client:openMechanicTools' }
-    }
-    
-    menu[#menu+1] = {
-        header = 'Close',
-        params = { event = 'qb-menu:client:closeMenu' }
-    }
-    
-    exports['qb-menu']:openMenu(menu)
+
+    menu[#menu+1] = { header = 'Back',  params = { event = 'pf-mechanicjob:client:openMechanicTools' } }
+    if Config.MenuSystem ~= 'ox_lib' then
+        menu[#menu+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+    end
+
+    OpenMenu(menu)
 end
 
 -- Helper: progress bar (import from main.lua or define locally)
@@ -311,6 +307,46 @@ local function IsDPFRemoved(veh)
     return removed
 end
 
+-- CHANGE: make OpenMenu global (remove 'local') so other earlier functions can call it
+function OpenMenu(menu)
+    local useOx = (Config and Config.MenuSystem == 'ox_lib')
+    if useOx then
+        local function resourceStarted(name)
+            local st = GetResourceState(name)
+            return st == 'started' or st == 'starting'
+        end
+        if resourceStarted('ox_lib') and lib and lib.registerContext then
+            local contextId = 'pf_mech_tools_' .. GetGameTimer()
+            local title, options = 'Mechanic Tools', {}
+            for _, item in ipairs(menu) do
+                if item.isMenuHeader then
+                    if item.header then title = item.header end
+                else
+                    local hasEvent = (item.params and item.params.event)
+                    options[#options+1] = {
+                        title = item.header or '',
+                        description = item.txt or '',
+                        disabled = not hasEvent,
+                        onSelect = function()
+                            if hasEvent then
+                                TriggerEvent(item.params.event, item.params.args)
+                            end
+                        end
+                    }
+                end
+            end
+            lib.registerContext({ id = contextId, title = title, options = options })
+            lib.showContext(contextId)
+            return
+        end
+    end
+    if exports['qb-menu'] and exports['qb-menu'].openMenu then
+        exports['qb-menu']:openMenu(menu)
+    else
+        QBCore.Functions.Notify('Menu system not found', 'error')
+    end
+end
+
 -- Open upgrade display menu
 RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
     local veh = nearbyVeh(6.0)
@@ -322,8 +358,7 @@ RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
     
     local plate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
     local modelName = GetDisplayNameFromVehicleModel(GetEntityModel(veh))
-    local displayName = GetLabelText(modelName)
-    if displayName == 'NULL' then displayName = modelName end
+    local displayName = GetLabelText(modelName); if displayName == 'NULL' then displayName = modelName end
     
     local upgrades = getVehicleUpgrades(veh)
     
@@ -334,11 +369,7 @@ RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
     
     -- Build menu
     local menu = {
-        {
-            header = 'Vehicle Performance Upgrades',
-            txt = string.format('%s | Plate: %s', displayName, plate),
-            isMenuHeader = true
-        }
+        { header = 'Vehicle Performance Upgrades', txt = string.format('%s | Plate: %s', displayName, plate), isMenuHeader = true }
     }
     
     -- Add upgrade entries (removed armor)
@@ -416,8 +447,8 @@ RegisterNetEvent('pf-mechanicjob:client:openUpgradeMenu', function()
         params = { event = 'qb-menu:client:closeMenu' }
     }
     
-    -- Open menu
-    exports['qb-menu']:openMenu(menu)
+    -- Open menu (CHANGED: use new helper)
+    OpenMenu(menu)
 end)
 
 -- Open cosmetics menu
@@ -755,7 +786,7 @@ RegisterNetEvent('pf-mechanicjob:client:openMechanicTools', function()
     local veh = nearbyVeh(6.0)
     if veh == 0 then QBCore.Functions.Notify('No vehicle nearby', 'error'); return end
     local menu = buildMechanicToolsMenu(veh)
-    exports['qb-menu']:openMenu(menu)
+    OpenMenu(menu)  -- CHANGED: use new helper
 end)
 
 -- NEW: Cosmetic detail viewer
@@ -800,7 +831,7 @@ RegisterNetEvent('pf-mechanicjob:client:viewCosmeticMod', function(data)
 
     menu[#menu+1] = { header='Back', params = { event='pf-mechanicjob:client:openMechanicTools' } }
     menu[#menu+1] = { header='Close', params = { event='qb-menu:client:closeMenu' } }
-    exports['qb-menu']:openMenu(menu)
+    OpenMenu(menu)  -- CHANGED: use new helper
 end)
 
 -- NEW: Apply cosmetic mod

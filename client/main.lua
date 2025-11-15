@@ -585,47 +585,194 @@ RegisterNetEvent('pf_mech:applyTint', function(args)
     end)
 end)
 
--- Override cosmetic use handler to enforce zones and support tint
-RegisterNetEvent('pf-mechanicjob:client:usePart', function(item)
-    local name = item and item.name or nil
-    if not name then return end
-    if name == 'tint_supplies' or name == 'tint' or name == 'window_tint' then
-        local vehicle = nearbyVeh(5.0)
-        if vehicle == 0 then QBCore.Functions.Notify('No vehicle nearby', 'error'); return end
-        openTintPicker(vehicle)
-        return
-    end
+-- NEW: Map performance items to their mod info
+local PerformanceItemMap = {
+    engine1 = { modType = 11, modIndex = 0, label = 'Engine Level 1' },
+    engine2 = { modType = 11, modIndex = 1, label = 'Engine Level 2' },
+    engine3 = { modType = 11, modIndex = 2, label = 'Engine Level 3' },
+    engine4 = { modType = 11, modIndex = 3, label = 'Engine Level 4' },
+    engine5 = { modType = 11, modIndex = 4, label = 'Engine Level 5' },
+    brakes1 = { modType = 12, modIndex = 0, label = 'Brakes Level 1' },
+    brakes2 = { modType = 12, modIndex = 1, label = 'Brakes Level 2' },
+    brakes3 = { modType = 12, modIndex = 2, label = 'Brakes Level 3' },
+    transmission1 = { modType = 13, modIndex = 0, label = 'Transmission Level 1' },
+    transmission2 = { modType = 13, modIndex = 1, label = 'Transmission Level 2' },
+    transmission3 = { modType = 13, modIndex = 2, label = 'Transmission Level 3' },
+    suspension1 = { modType = 15, modIndex = 0, label = 'Suspension Level 1' },
+    suspension2 = { modType = 15, modIndex = 1, label = 'Suspension Level 2' },
+    suspension3 = { modType = 15, modIndex = 2, label = 'Suspension Level 3' },
+    suspension4 = { modType = 15, modIndex = 3, label = 'Suspension Level 4' },
+    turbo = { modType = 18, modIndex = 0, label = 'Turbo', isToggle = true },
+}
 
-    if not CosmeticItems[name] then return end
-
-    local vehicle = nearbyVeh(3.5)
-    if vehicle == 0 then
+-- NEW: Install performance upgrade
+RegisterNetEvent('pf-mechanicjob:client:usePerformanceItem', function(itemName)
+    local veh = nearbyVeh(6.0)
+    if veh == 0 then
         QBCore.Functions.Notify('No vehicle nearby', 'error')
         return
     end
-
-    -- Enforce placement zones
-    if name == 'bumper' or name == 'vehicle_bumper' then
-        local nearF = playerNear(posFront(vehicle), 2.8)
-        local nearB = playerNear(posBack(vehicle), 2.8)
-        if not (nearF or nearB) then
-            QBCore.Functions.Notify('Move to the front or the back of the car to fit a bumper', 'error')
+    
+    local upgradeInfo = PerformanceItemMap[itemName]
+    if not upgradeInfo then
+        QBCore.Functions.Notify('Unknown upgrade', 'error')
+        return
+    end
+    
+    local ped = PlayerPedId()
+    if GetIsVehicleEngineRunning(veh) then
+        QBCore.Functions.Notify('Turn engine off first', 'error')
+        return
+    end
+    
+    -- Check for toolbox
+    QBCore.Functions.TriggerCallback('pf_mech:hasToolbox', function(has)
+        if not has then
+            QBCore.Functions.Notify('You need a toolbox', 'error')
             return
         end
-    elseif name == 'hood' then
-        local nearF = playerNear(posFront(vehicle), 2.8)
-        if not nearF then
-            QBCore.Functions.Notify('Move to the front of the car to fit a hood', 'error')
-            return
+        
+        -- Progress bar
+        RequestAnimDict('mini@repair')
+        while not HasAnimDictLoaded('mini@repair') do Wait(0) end
+        TaskPlayAnim(ped, 'mini@repair', 'fixing_a_ped', 8.0, -8.0, -1, 49, 0, false, false, false)
+        
+        QBCore.Functions.Progressbar('installing_upgrade', 'Installing ' .. upgradeInfo.label .. '...', 6000, false, true, {
+            disableMovement = true,
+            disableCarMovement = true,
+            disableMouse = false,
+            disableCombat = true
+        }, {}, {}, {}, function() -- Success
+            ClearPedTasks(ped)
+            
+            -- Tell server to consume item and apply upgrade
+            TriggerServerEvent('pf_mech:server:applyPerformanceUpgrade', {
+                vehicle = NetworkGetNetworkIdFromEntity(veh),
+                item = itemName,
+                modType = upgradeInfo.modType,
+                modIndex = upgradeInfo.modIndex,
+                isToggle = upgradeInfo.isToggle
+            })
+            
+        end, function() -- Cancel
+            ClearPedTasks(ped)
+            QBCore.Functions.Notify('Installation cancelled', 'error')
+        end)
+    end)
+end)
+
+-- NEW: Repair item use handler (generic for all repair items)
+RegisterNetEvent('pf-mechanicjob:client:useRepairItem', function(itemName)
+    local veh = nearbyVeh(6.0)
+    if veh == 0 then
+        QBCore.Functions.Notify('No vehicle nearby', 'error')
+        return
+    end
+    
+    local ped = PlayerPedId()
+    if GetIsVehicleEngineRunning(veh) then
+        QBCore.Functions.Notify('Turn engine off first', 'error')
+        return
+    end
+    
+    -- Map item to part label
+    local partLabels = {
+        alternator = 'Alternator',
+        sparkplugs = 'Spark Plugs',
+        carbattery = 'Car Battery',
+        engine_oil = 'Engine Oil',
+        oil_filter = 'Oil Filter',
+        brake_pads = 'Brake Pads',
+        susp_arm = 'Suspension Arm',
+        axleparts = 'Axle Parts',
+        engine_part = 'Engine Parts',
+        body_part = 'Body Panel',
+        fuel_injector = 'Fuel Injector',
+        powersteeringpump = 'Power Steering Pump',
+        radiator = 'Radiator',
+        power_steering_fluid = 'Power Steering Fluid',
+        transmissionfluid = 'Transmission Fluid',
+        brakefluid = 'Brake Fluid',
+        coolant = 'Coolant',
+    }
+    
+    local label = partLabels[itemName] or itemName:gsub('_', ' ')
+    
+    -- Progress bar
+    RequestAnimDict('mini@repair')
+    while not HasAnimDictLoaded('mini@repair') do Wait(0) end
+    TaskPlayAnim(ped, 'mini@repair', 'fixing_a_ped', 8.0, -8.0, -1, 49, 0, false, false, false)
+    
+    QBCore.Functions.Progressbar('repairing_part', 'Repairing ' .. label .. '...', 5000, false, true, {
+        disableMovement = true,
+        disableCarMovement = true,
+        disableMouse = false,
+        disableCombat = true
+    }, {}, {}, {}, function() -- Success
+        ClearPedTasks(ped)
+        
+        -- Map item name to part key for server
+        local partKeyMap = {
+            alternator = 'alternator',
+            sparkplugs = 'sparkplugs',
+            carbattery = 'carbattery',
+            engine_oil = 'engine_oil',
+            oil_filter = 'oil_filter',
+            brake_pads = 'brakes',
+            susp_arm = 'susp_arm',
+            axleparts = 'axleparts',
+            engine_part = 'engine_part',
+            body_part = 'body_part',
+            fuel_injector = 'fuel_injector',
+            powersteeringpump = 'powersteeringpump',
+            radiator = 'radiator',
+            power_steering_fluid = 'power_steering_fluid',
+            transmissionfluid = 'transmissionfluid',
+            brakefluid = 'brakefluid',
+            coolant = 'coolant',
+        }
+        
+        local partKey = partKeyMap[itemName] or itemName
+        
+        -- Tell server to consume item and apply repair
+        QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
+            if success then
+                QBCore.Functions.Notify(msg or 'Repair completed', 'success')
+            else
+                QBCore.Functions.Notify(msg or 'Repair failed', 'error')
+            end
+        end, NetworkGetNetworkIdFromEntity(veh), partKey, 1, nil)
+        
+    end, function() -- Cancel
+        ClearPedTasks(ped)
+        QBCore.Functions.Notify('Repair cancelled', 'error')
+    end)
+end)
+
+-- NEW: Hook cosmetic item usage
+RegisterNetEvent('pf-mechanicjob:client:usePart', function(item)
+    local name = item and item.name or nil
+    if not name then return end
+    
+    -- Check if it's a cosmetic item
+    local cosmeticItems = { 'spoiler', 'bumper', 'vehicle_bumper', 'skirts', 'exhaust', 'rollcage', 'hood', 'roof' }
+    local isCosmetic = false
+    for _, cosm in ipairs(cosmeticItems) do
+        if name == cosm then
+            isCosmetic = true
+            break
         end
     end
-    -- exhaust, rims, spoiler, roof, skirts: anywhere
-
-    SetVehicleModKit(vehicle, 0)
-    if ItemToModTypes[name] then
-        openModPicker(name, vehicle)
-    else
-        QBCore.Functions.Notify('Invalid mod type', 'error')
+    
+    if isCosmetic then
+        local veh = nearbyVeh(6.0)
+        if veh == 0 then
+            QBCore.Functions.Notify('No vehicle nearby', 'error')
+            return
+        end
+        
+        -- Open mod picker (defined in cosmetics.lua)
+        TriggerEvent('pf-mechanicjob:client:openCosmeticPicker', name, veh)
     end
 end)
 

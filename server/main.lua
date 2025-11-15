@@ -1330,3 +1330,42 @@ QBCore.Functions.CreateCallback('pf_mech:hasDPFItem', function(source, cb)
     cb(item ~= nil)
 end)
 
+-- NEW: Apply performance upgrade (consume item and broadcast)
+RegisterNetEvent('pf_mech:server:applyPerformanceUpgrade', function(data)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not data then return end
+    
+    local itemName = data.item
+    local modType = data.modType
+    local modIndex = data.modIndex
+    local isToggle = data.isToggle
+    local vehicleNet = data.vehicle
+    
+    -- Verify item exists
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: ' .. tostring(itemName), 'error')
+        return
+    end
+    
+    -- Remove item
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to remove item: ' .. tostring(itemName), 'error')
+        return
+    end
+    
+    -- Broadcast to all clients to apply the upgrade
+    TriggerClientEvent('pf_mech:client:upgradeApplied', -1, {
+        vehicle = vehicleNet,
+        modType = modType,
+        modIndex = modIndex,
+        isToggle = isToggle
+    })
+    
+    -- Show item box
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+    TriggerClientEvent('QBCore:Notify', src, 'Upgrade installed', 'success')
+end)
+

@@ -18,7 +18,7 @@ Config.Debug = true -- Set to true to see all debug notifications and console lo
 --   'cd_garages'  = Codesign's cd_garages (https://docs.codesign.pro/paid-scripts/garage)
 -- Add more supported garage scripts here as needed.
 Config.GarageSystem = 'cd_garages' -- or 'cd_garages'
-Config.MenuSystem   = 'qb-menu'          -- 'qb-menu' or 'ox_lib'
+Config.MenuSystem   = 'ox_lib'          -- 'qb-menu' or 'ox_lib'
 
 -- Jobs allowed to use mechanic items (in addition to 'mechanic')
 Config.AllowedJobs = {
