@@ -611,20 +611,40 @@ local performanceParts = {
     "engine1", "engine2", "engine3", "engine4", "engine5",
     "brakes1", "brakes2", "brakes3",
     "transmission1", "transmission2", "transmission3",
+    "transmission4",      -- ADDED
     "suspension1", "suspension2", "suspension3", "suspension4",
+    "suspension5",        -- ADDED
     "armor1", "armor2", "armor3", "armor4", "armor5",
-    "turbo"
+    "car_armor",          -- ADDED (sets max armor)
+    "turbo",
+    "drifttires",         -- ADDED (toggle drift tires)
+    "bprooftires",        -- ADDED (bulletproof tires)
+    "headlights"          -- ADDED (xenon lights)
 }
+
+-- ADD: toolbox helper (missing before)
+local function playerHasToolbox(src)
+    local ply = QBCore.Functions.GetPlayer(src)
+    if not ply then return false end
+    return ply.Functions.GetItemByName('toolbox') ~= nil
+end
 
 for _, item in ipairs(performanceParts) do
     QBCore.Functions.CreateUseableItem(item, function(source)
         local Player = QBCore.Functions.GetPlayer(source)
-        if Player.PlayerData.job.name == "mechanic" then
-            -- CHANGED: trigger correct client performance handler
-            TriggerClientEvent('pf-mechanicjob:client:usePerformanceItem', source, item)
-        else
+        if not Player then return end
+        if not Config.IsMechanicJob(Player.PlayerData.job.name) then
             TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
+            return
         end
+        if not playerHasToolbox(source) then
+            TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
+            return
+        end
+        if Config.Debug then
+            print('[PERF PART USE SERVER] '..item..' by '..source)
+        end
+        TriggerClientEvent('pf-mechanicjob:client:usePerformanceItem', source, item)
     end)
 end
 
@@ -809,13 +829,8 @@ end)
 -- Register useable items
 local function RegisterItems()
     local cosmeticItems = {
-        'spoiler',
-        'bumper',
-        'skirts',
-        'exhaust',
-        'rollcage',
-        'hood',
-        'roof'
+        'spoiler','bumper','vehicle_bumper','skirts','exhaust','rollcage','hood','roof',
+        'externals','internals','livery','customplate','seat','horn','rims'
     }
     
     local paintItems = {
@@ -829,17 +844,17 @@ local function RegisterItems()
     
     -- CHANGED: require toolbox for all
     for _, item in ipairs(cosmeticItems) do
-        QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
+        QBCore.Functions.CreateUseableItem(item, function(source)
             if not playerHasToolbox(source) then
                 TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
                 return
             end
-            TriggerClientEvent('pf-mechanicjob:client:usePart', source, itemInfo)
+            TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', source, item)
         end)
     end
     
     for _, item in ipairs(paintItems) do
-        QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
+        QBCore.Functions.CreateUseableItem(item, function(source)
             if not playerHasToolbox(source) then
                 TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
                 return
@@ -847,7 +862,8 @@ local function RegisterItems()
             if item == 'paint_kit' then
                 TriggerClientEvent('pf-mechanicjob:client:usePaint', source, item)
             else
-                TriggerClientEvent('pf-mechanicjob:client:usePart', source, itemInfo)
+                if Config.Debug then print('[COSMETIC USE SERVER] tint_supplies by '..source) end
+                TriggerClientEvent('pf-mechanicjob:client:usePart', source, item)
             end
         end)
     end
@@ -1384,13 +1400,22 @@ RegisterNetEvent('pf_mech:server:applyPerformanceUpgrade', function(data)
         return
     end
     
-    -- Broadcast to all clients to apply the upgrade
-    TriggerClientEvent('pf_mech:client:upgradeApplied', -1, {
+    -- Broadcast to all clients to apply the upgrade (FIX: send both event names)
+    TriggerClientEvent('pf_mechanicjob:client:upgradeApplied', -1, {
         vehicle = vehicleNet,
         modType = modType,
         modIndex = modIndex,
         isToggle = isToggle
     })
+    TriggerClientEvent('pf_mech:client:upgradeApplied', -1, { -- compatibility
+        vehicle = vehicleNet,
+        modType = modType,
+        modIndex = modIndex,
+        isToggle = isToggle
+    })
+    if Config.Debug then
+        print(string.format('[PERF UPGRADE SERVER] %s applied to net %s (toggle=%s)', tostring(itemName), tostring(vehicleNet), tostring(isToggle)))
+    end
     
     -- Show item box
     TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")

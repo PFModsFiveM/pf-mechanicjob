@@ -526,255 +526,228 @@ AddEventHandler('QBCore:Client:UseItem', function(item)
     end
 
     -- cosmetic items (mods)
-    if name == "spoiler" or name == "bumper" or name == "skirts" or name == "exhaust"
+    if name == "spoiler" or name == "bumper" or name == "exhaust"
        or name == "rollcage" or name == "hood" or name == "roof" then
         -- This will be caught by server CreateUseableItem instead
         return
     end
 end)
 
--- NEW: helper to check if player is within radius of a target point
-local function playerNear(target, radius)
-    local ped = PlayerPedId()
-    local p = GetEntityCoords(ped)
-    return (#(p - target)) <= (radius or 2.5)
-end
-
--- NEW: tint picker and applier
-local function openTintPicker(veh)
-    if not DoesEntityExist(veh) then return end
-    local opts = {
-        { idx=0, label='None' },
-        { idx=1, label='Pure Black' },
-        { idx=2, label='Dark Smoke' },
-        { idx=3, label='Light Smoke' },
-        { idx=4, label='Stock' },
-        { idx=5, label='Limo' },
-        { idx=6, label='Green' },
-    }
-    local menu = { { header='Window Tint', isMenuHeader=true } }
-    for _, o in ipairs(opts) do
+-- ADD: wheel (rims) use handler
+RegisterNetEvent('pf-mechanicjob:client:useWheels', function(itemName)
+    local veh = nearbyVeh(6.0)
+    if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error') return end
+    if GetIsVehicleEngineRunning(veh) then QBCore.Functions.Notify('Turn engine off first','error') return end
+    SetVehicleModKit(veh, 0)
+    local count = GetNumVehicleMods(veh, 23)
+    if count == 0 then QBCore.Functions.Notify('No wheel variants','error') return end
+    local menu = { { header='Wheel Options', isMenuHeader=true } }
+    for i=0,count-1 do
+        local lbl = GetModTextLabel(veh, 23, i)
+        local nice = (lbl and GetLabelText(lbl) ~= 'NULL') and GetLabelText(lbl) or ('Wheel %d'):format(i+1)
         menu[#menu+1] = {
-            header = o.label,
-            txt = ('Apply tint %s'):format(o.label),
+            header = nice,
+            txt = 'Install',
             params = {
-                event = 'pf_mech:applyTint',
-                args = { vehicle = NetworkGetNetworkIdFromEntity(veh), tint = o.idx }
+                event = 'pf-mechanicjob:client:applyCosmeticModFallback',
+                args = {
+                    vehicle = NetworkGetNetworkIdFromEntity(veh),
+                    item = 'rims',
+                    modType = 23,
+                    modIndex = i
+                }
             }
         }
     end
     menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
     exports['qb-menu']:openMenu(menu)
-end
-
-RegisterNetEvent('pf_mech:applyTint', function(args)
-    local veh = NetworkGetEntityFromNetworkId(args.vehicle or 0)
-    if not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found', 'error'); return end
-    if GetIsVehicleEngineRunning(veh) then QBCore.Functions.Notify('Turn engine off first', 'error'); return end
-    
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
-
-        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-            if not ok then QBCore.Functions.Notify('Missing tint supplies', 'error'); return end
-            if not DoProgress('Applying window tint...', timeForAction('paint'), 'amb@world_human_vehicle_mechanic@male@base', 'base') then return end
-            SetVehicleWindowTint(veh, tonumber(args.tint) or 0)
-            QBCore.Functions.Notify('Window tint applied', 'success')
-        end, 'tint_supplies')
-    end)
 end)
 
--- NEW: Map performance items to their mod info
-local PerformanceItemMap = {
-    engine1 = { modType = 11, modIndex = 0, label = 'Engine Level 1' },
-    engine2 = { modType = 11, modIndex = 1, label = 'Engine Level 2' },
-    engine3 = { modType = 11, modIndex = 2, label = 'Engine Level 3' },
-    engine4 = { modType = 11, modIndex = 3, label = 'Engine Level 4' },
-    engine5 = { modType = 11, modIndex = 4, label = 'Engine Level 5' },
-    brakes1 = { modType = 12, modIndex = 0, label = 'Brakes Level 1' },
-    brakes2 = { modType = 12, modIndex = 1, label = 'Brakes Level 2' },
-    brakes3 = { modType = 12, modIndex = 2, label = 'Brakes Level 3' },
-    transmission1 = { modType = 13, modIndex = 0, label = 'Transmission Level 1' },
-    transmission2 = { modType = 13, modIndex = 1, label = 'Transmission Level 2' },
-    transmission3 = { modType = 13, modIndex = 2, label = 'Transmission Level 3' },
-    suspension1 = { modType = 15, modIndex = 0, label = 'Suspension Level 1' },
-    suspension2 = { modType = 15, modIndex = 1, label = 'Suspension Level 2' },
-    suspension3 = { modType = 15, modIndex = 2, label = 'Suspension Level 3' },
-    suspension4 = { modType = 15, modIndex = 3, label = 'Suspension Level 4' },
-    turbo = { modType = 18, modIndex = 0, label = 'Turbo', isToggle = true },
+-- ================== cosmetic picker (multi-category support) ==================
+local MultiCosmeticMap = {
+    bumper      = { 1, 2 },
+    vehicle_bumper = { 1, 2 },
+    externals   = { 6, 8, 9, 10, 45 },
+    internals   = { 28,29,30,31,32,33,34,35,36,37,38,39,40 },
+    customplate = { 25, 48 },
 }
 
--- NEW: Install performance upgrade
-RegisterNetEvent('pf-mechanicjob:client:usePerformanceItem', function(itemName)
-    local veh = nearbyVeh(6.0)
-    if veh == 0 then
-        QBCore.Functions.Notify('No vehicle nearby', 'error')
-        return
-    end
-    
-    local upgradeInfo = PerformanceItemMap[itemName]
-    if not upgradeInfo then
-        QBCore.Functions.Notify('Unknown upgrade', 'error')
-        return
-    end
-    
-    local ped = PlayerPedId()
-    if GetIsVehicleEngineRunning(veh) then
-        QBCore.Functions.Notify('Turn engine off first', 'error')
-        return
-    end
-    
-    -- Check for toolbox
-    QBCore.Functions.TriggerCallback('pf_mech:hasToolbox', function(has)
-        if not has then
-            QBCore.Functions.Notify('You need a toolbox', 'error')
+local SingleCosmeticMap = {
+    spoiler = 0, skirts = 3, exhaust = 4, rollcage = 5,
+    hood = 7, roof = 10, rims = 23, livery = 46, seat = 31, horn = 14
+}
+
+local function readableModName(modType)
+    local labels = {
+        [0]='Spoiler',[1]='Front Bumper',[2]='Rear Bumper',[3]='Side Skirt',[4]='Exhaust',[5]='Roll Cage',
+        [6]='Grille',[7]='Hood',[8]='Fender',[9]='Right Fender',[10]='Roof',[14]='Horn',[23]='Wheels',
+        [25]='Plate Holder',[28]='Dashboard',[29]='Dial Design',[30]='Door Speakers',[31]='Seats',
+        [32]='Steering Wheel',[33]='Shifter',[34]='Plaque',[35]='Speakers',[36]='Trunk',
+        [37]='Hydraulics',[38]='Engine Block',[39]='Air Filter',[40]='Struts',[41]='Arch Cover',
+        [42]='Aerials',[43]='Trim',[44]='Tank',[45]='Windows',[46]='Livery',[48]='Vanity Plate'
+    }
+    return labels[modType] or ('Mod '..modType)
+end
+
+-- CHANGED fallback picker (multi-category support)
+if not _G.pf_mech_cosmetics_loaded then
+    RegisterNetEvent('pf-mechanicjob:client:openCosmeticPicker', function(itemName, veh)
+        if Config.Debug then
+            print('[COSMETIC PICKER] item='..tostring(itemName))
+        end
+        if not veh or veh == 0 or not DoesEntityExist(veh) then
+            QBCore.Functions.Notify('No vehicle nearby', 'error'); return
+        end
+        if GetIsVehicleEngineRunning(veh) then
+            QBCore.Functions.Notify('Turn engine off first', 'error'); return
+        end
+        SetVehicleModKit(veh, 0)
+
+        -- Tint direct
+        if itemName == 'tint_supplies' then
+            openTintPicker(veh)
             return
         end
-        
-        -- Progress bar
+
+        local multi = MultiCosmeticMap[itemName]
+        local single = SingleCosmeticMap[itemName]
+
+        -- If unknown
+        if not multi and not single then
+            QBCore.Functions.Notify('Unsupported cosmetic item', 'error')
+            if Config.Debug then print('[COSMETIC PICKER] Unsupported: '..tostring(itemName)) end
+            return
+        end
+
+        -- MULTI CATEGORY FIRST LEVEL
+        if multi then
+            local menu = {
+                { header = (itemName:gsub('_',' '))..' Categories', isMenuHeader = true }
+            }
+            for _, modType in ipairs(multi) do
+                local count = GetNumVehicleMods(veh, modType)
+                local label = readableModName(modType)
+                local suffix = count > 0 and ('['..count..' options]') or '[none]'
+                menu[#menu+1] = {
+                    header = label..' '..suffix,
+                    txt = count > 0 and 'Select to view options' or 'No variants',
+                    params = count > 0 and {
+                        event = 'pf-mechanicjob:client:openCosmeticVariants',
+                        args = { vehicle = NetworkGetNetworkIdFromEntity(veh), item = itemName, modType = modType }
+                    } or {}
+                }
+            end
+            menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
+            exports['qb-menu']:openMenu(menu)
+            return
+        end
+
+        -- SINGLE CATEGORY
+        local modType = single
+        local count = GetNumVehicleMods(veh, modType)
+        if count == 0 then
+            QBCore.Functions.Notify('No variants for this vehicle', 'error')
+            return
+        end
+
+        local title = readableModName(modType)..' Options'
+        local menu = { { header = title, isMenuHeader = true } }
+        for i = 0, count - 1 do
+            local textLabel = GetModTextLabel(veh, modType, i)
+            local nice = textLabel and GetLabelText(textLabel)
+            if nice == 'NULL' or not nice then nice = ('Option %d'):format(i+1) end
+            menu[#menu+1] = {
+                header = nice,
+                params = {
+                    event = 'pf-mechanicjob:client:applyCosmeticModFallback',
+                    args = {
+                        vehicle = NetworkGetNetworkIdFromEntity(veh),
+                        item = itemName,
+                        modType = modType,
+                        modIndex = i
+                    }
+                }
+              }
+        end
+        menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
+        exports['qb-menu']:openMenu(menu)
+    end)
+
+    -- CHANGED: variants for multi category
+    RegisterNetEvent('pf-mechanicjob:client:openCosmeticVariants', function(data)
+        local veh = NetworkGetEntityFromNetworkId(data.vehicle or 0)
+        if not veh or veh == 0 or not DoesEntityExist(veh) then
+            QBCore.Functions.Notify('Vehicle not found', 'error'); return
+        end
+        if GetIsVehicleEngineRunning(veh) then
+            QBCore.Functions.Notify('Turn engine off first', 'error'); return
+        end
+        SetVehicleModKit(veh, 0)
+        local modType = tonumber(data.modType)
+        local itemName = data.item
+        local count = GetNumVehicleMods(veh, modType)
+        if count == 0 then
+            QBCore.Functions.Notify('No variants', 'error'); return
+        end
+        local menu = {
+            { header = readableModName(modType)..' Variants', isMenuHeader = true }
+        }
+        for i=0,count-1 do
+            local textLabel = GetModTextLabel(veh, modType, i)
+            local nice = textLabel and GetLabelText(textLabel)
+            if nice == 'NULL' or not nice then nice = ('Option %d'):format(i+1) end
+            menu[#menu+1] = {
+                header = nice,
+                params = {
+                    event = 'pf-mechanicjob:client:applyCosmeticModFallback',
+                    args = {
+                        vehicle = NetworkGetNetworkIdFromEntity(veh),
+                        item = itemName,
+                        modType = modType,
+                        modIndex = i
+                    }
+                }
+            }
+        end
+        menu[#menu+1] = { header='Back', params={ event='pf-mechanicjob:client:openCosmeticPicker', args=itemName, } }
+        menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
+        exports['qb-menu']:openMenu(menu)
+    end)
+
+    -- CHANGED: applyCosmeticModFallback (leave below, unchanged apart from comment)
+    -- It consumes the item and calls server applyMod.
+    RegisterNetEvent('pf-mechanicjob:client:applyCosmeticModFallback', function(data)
+        local veh = NetworkGetEntityFromNetworkId(data.vehicle or 0)
+        if not veh or veh == 0 or not DoesEntityExist(veh) then
+            QBCore.Functions.Notify('Vehicle not found', 'error'); return
+        end
+        if GetIsVehicleEngineRunning(veh) then
+            QBCore.Functions.Notify('Turn engine off first', 'error'); return
+        end
+        SetVehicleModKit(veh, 0)
+
+        -- Progress
         RequestAnimDict('mini@repair')
         while not HasAnimDictLoaded('mini@repair') do Wait(0) end
-        TaskPlayAnim(ped, 'mini@repair', 'fixing_a_ped', 8.0, -8.0, -1, 49, 0, false, false, false)
-        
-        QBCore.Functions.Progressbar('installing_upgrade', 'Installing ' .. upgradeInfo.label .. '...', 6000, false, true, {
-            disableMovement = true,
-            disableCarMovement = true,
-            disableMouse = false,
-            disableCombat = true
-        }, {}, {}, {}, function() -- Success
-            ClearPedTasks(ped)
-            
-            -- Tell server to consume item and apply upgrade
-            TriggerServerEvent('pf_mech:server:applyPerformanceUpgrade', {
-                vehicle = NetworkGetNetworkIdFromEntity(veh),
-                item = itemName,
-                modType = upgradeInfo.modType,
-                modIndex = upgradeInfo.modIndex,
-                isToggle = upgradeInfo.isToggle
-            })
-            
-        end, function() -- Cancel
-            ClearPedTasks(ped)
+        TaskPlayAnim(PlayerPedId(), 'mini@repair', 'fixing_a_ped', 8.0, -8.0, -1, 49, 0, false, false, false)
+
+        if not DoProgress('Installing modification...', Config.ActionTimes.setMod or 4500, 'mini@repair', 'fixing_a_ped') then
+            ClearPedTasks(PlayerPedId())
             QBCore.Functions.Notify('Installation cancelled', 'error')
-        end)
-    end)
-end)
-
--- NEW: Repair item use handler (generic for all repair items)
-RegisterNetEvent('pf-mechanicjob:client:useRepairItem', function(itemName)
-    local veh = nearbyVeh(6.0)
-    if veh == 0 then
-        QBCore.Functions.Notify('No vehicle nearby', 'error')
-        return
-    end
-    
-    local ped = PlayerPedId()
-    if GetIsVehicleEngineRunning(veh) then
-        QBCore.Functions.Notify('Turn engine off first', 'error')
-        return
-    end
-    
-    -- Map item to part label
-    local partLabels = {
-        alternator = 'Alternator',
-        sparkplugs = 'Spark Plugs',
-        carbattery = 'Car Battery',
-        engine_oil = 'Engine Oil',
-        oil_filter = 'Oil Filter',
-        brake_pads = 'Brake Pads',
-        susp_arm = 'Suspension Arm',
-        axleparts = 'Axle Parts',
-        engine_part = 'Engine Parts',
-        body_part = 'Body Panel',
-        fuel_injector = 'Fuel Injector',
-        powersteeringpump = 'Power Steering Pump',
-        radiator = 'Radiator',
-        power_steering_fluid = 'Power Steering Fluid',
-        transmissionfluid = 'Transmission Fluid',
-        brakefluid = 'Brake Fluid',
-        coolant = 'Coolant',
-    }
-    
-    local label = partLabels[itemName] or itemName:gsub('_', ' ')
-    
-    -- Progress bar
-    RequestAnimDict('mini@repair')
-    while not HasAnimDictLoaded('mini@repair') do Wait(0) end
-    TaskPlayAnim(ped, 'mini@repair', 'fixing_a_ped', 8.0, -8.0, -1, 49, 0, false, false, false)
-    
-    QBCore.Functions.Progressbar('repairing_part', 'Repairing ' .. label .. '...', 5000, false, true, {
-        disableMovement = true,
-        disableCarMovement = true,
-        disableMouse = false,
-        disableCombat = true
-    }, {}, {}, {}, function() -- Success
-        ClearPedTasks(ped)
-        
-        -- Map item name to part key for server
-        local partKeyMap = {
-            alternator = 'alternator',
-            sparkplugs = 'sparkplugs',
-            carbattery = 'carbattery',
-            engine_oil = 'engine_oil',
-            oil_filter = 'oil_filter',
-            brake_pads = 'brakes',
-            susp_arm = 'susp_arm',
-            axleparts = 'axleparts',
-            engine_part = 'engine_part',
-            body_part = 'body_part',
-            fuel_injector = 'fuel_injector',
-            powersteeringpump = 'powersteeringpump',
-            radiator = 'radiator',
-            power_steering_fluid = 'power_steering_fluid',
-            transmissionfluid = 'transmissionfluid',
-            brakefluid = 'brakefluid',
-            coolant = 'coolant',
-        }
-        
-        local partKey = partKeyMap[itemName] or itemName
-        
-        -- Tell server to consume item and apply repair
-        QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
-            if success then
-                QBCore.Functions.Notify(msg or 'Repair completed', 'success')
-            else
-                QBCore.Functions.Notify(msg or 'Repair failed', 'error')
-            end
-        end, NetworkGetNetworkIdFromEntity(veh), partKey, 1, nil)
-        
-    end, function() -- Cancel
-        ClearPedTasks(ped)
-        QBCore.Functions.Notify('Repair cancelled', 'error')
-    end)
-end)
-
--- NEW: Hook cosmetic item usage
-RegisterNetEvent('pf-mechanicjob:client:usePart', function(item)
-    local name = item and item.name or nil
-    if not name then return end
-    
-    -- Check if it's a cosmetic item
-    local cosmeticItems = { 'spoiler', 'bumper', 'vehicle_bumper', 'skirts', 'exhaust', 'rollcage', 'hood', 'roof' }
-    local isCosmetic = false
-    for _, cosm in ipairs(cosmeticItems) do
-        if name == cosm then
-            isCosmetic = true
-            break
-        end
-    end
-    
-    if isCosmetic then
-        local veh = nearbyVeh(6.0)
-        if veh == 0 then
-            QBCore.Functions.Notify('No vehicle nearby', 'error')
             return
         end
-        
-        -- Open mod picker (defined in cosmetics.lua)
-        TriggerEvent('pf-mechanicjob:client:openCosmeticPicker', name, veh)
-    end
-end)
+        ClearPedTasks(PlayerPedId())
+
+        -- Consume item server-side and broadcast sync
+        TriggerServerEvent('pf_mech:server:applyMod', {
+            vehicle  = NetworkGetNetworkIdFromEntity(veh),
+            item     = data.item,
+            modType  = data.modType,
+            modIndex = data.modIndex
+        })
+        QBCore.Functions.Notify('Modification applied', 'success')
+    end)
+end
 
 -- ============================================================================
 -- ROLLING COAL SYSTEM
@@ -1082,21 +1055,134 @@ AddEventHandler('QBCore:Client:UseItem', function(item)
     end
 
     -- cosmetic items (mods)
-    if name == "spoiler" or name == "bumper" or name == "skirts" or name == "exhaust"
+    if name == "spoiler" or name == "bumper" or name == "exhaust"
        or name == "rollcage" or name == "hood" or name == "roof" then
         -- This will be caught by server CreateUseableItem instead
         return
     end
 end)
 
--- Fallback manual command
-RegisterCommand('dpfmenu', function()
-  local veh = nearbyVeh(6.0)
-  if veh == 0 then QBCore.Functions.Notify('No vehicle','error'); return end
-  TriggerEvent('QBCore:Client:UseItem', { name='diagnostics_tool' })
-end, false)
+-- NEW: unified item -> modTypes mapping (single or multi)
+local CosmeticItemMap = {
+    spoiler       = {0},
+    bumper        = {1,2},
+    vehicle_bumper= {1,2},
+    skirts        = {3},
+    exhaust       = {4},
+    rollcage      = {5},
+    hood          = {7},
+    roof          = {10},
+    externals     = {6,8,9,10,45},
+    internals     = {28,29,30,31,32,33,34,35,36,37,38,39,40},
+    livery        = {46},
+    customplate   = {25,48},
+    seat          = {31},
+    horn          = {14},
+    rims          = {23},
+}
 
--- COMPAT: older server scripts might still emit 'pf_mech:tryUsePart'
-RegisterNetEvent('pf_mech:tryUsePart', function(itemName)
-    TriggerEvent('pf-mechanicjob:client:usePerformanceItem', itemName)
+-- NEW: open menu for a specific cosmetic item (direct variants)
+RegisterNetEvent('pf-mechanicjob:client:openItemModMenu', function(itemName)
+    itemName = tostring(itemName or '')
+    if itemName == '' then return end
+    local ped = PlayerPedId()
+    local veh = nearbyVeh(6.0)
+    if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error') return end
+    if GetIsVehicleEngineRunning(veh) then QBCore.Functions.Notify('Turn engine off first','error') return end
+    SetVehicleModKit(veh, 0)
+
+    -- tint special case
+    if itemName == 'tint_supplies' then
+        openTintPicker(veh)
+        return
+    end
+
+    local modTypes = CosmeticItemMap[itemName]
+    if not modTypes then
+        QBCore.Functions.Notify('Unsupported cosmetic item','error')
+        return
+    end
+
+    local menu = {
+        { header = (itemName:gsub('_',' ')):gsub('^%l', string.upper) .. ' Options', isMenuHeader = true }
+    }
+
+    for _, modType in ipairs(modTypes) do
+        local count = GetNumVehicleMods(veh, modType)
+        -- For toggle mods (none of these currently except horn maybe), still show status
+        if count == 0 then
+            -- Skip empty modType silently
+        else
+            -- Add category separator if multi-type
+            if #modTypes > 1 then
+                menu[#menu+1] = { header = '--- '..readableModName(modType)..' ---', isMenuHeader = true }
+            end
+            for i=0,count-1 do
+                local textLabel = GetModTextLabel(veh, modType, i)
+                local nice = textLabel and GetLabelText(textLabel)
+                if not nice or nice == 'NULL' then
+                    nice = ('Option %d'):format(i+1)
+                end
+                menu[#menu+1] = {
+                    header = nice,
+                    params = {
+                        event = 'pf-mechanicjob:client:applyCosmeticModSingle',
+                        args = {
+                            vehicle = NetworkGetNetworkIdFromEntity(veh),
+                            item = itemName,
+                            modType = modType,
+                            modIndex = i
+                        }
+                    }
+                }
+            end
+        end
+    end
+
+    menu[#menu+1] = { header = 'Close', params = { event='qb-menu:client:closeMenu' } }
+    exports['qb-menu']:openMenu(menu)
+end)
+
+-- NEW: apply selected cosmetic variant (consume item then apply)
+RegisterNetEvent('pf-mechanicjob:client:applyCosmeticModSingle', function(data)
+    local veh = NetworkGetEntityFromNetworkId(data.vehicle or 0)
+    if veh == 0 or not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found','error') return end
+    if GetIsVehicleEngineRunning(veh) then QBCore.Functions.Notify('Turn engine off first','error') return end
+    SetVehicleModKit(veh, 0)
+
+    RequestAnimDict('mini@repair')
+    while not HasAnimDictLoaded('mini@repair') do Wait(0) end
+    TaskPlayAnim(PlayerPedId(), 'mini@repair', 'fixing_a_ped', 8.0, -8.0, -1, 49, 0, false, false, false)
+
+    if not DoProgress('Installing '..(data.item or 'mod')..'...', Config.ActionTimes.setMod or 4500, 'mini@repair', 'fixing_a_ped') then
+        ClearPedTasks(PlayerPedId())
+        QBCore.Functions.Notify('Installation cancelled','error')
+        return
+    end
+    ClearPedTasks(PlayerPedId())
+
+    TriggerServerEvent('pf_mech:server:applyMod', {
+        vehicle  = NetworkGetNetworkIdFromEntity(veh),
+        item     = data.item,
+        modType  = data.modType,
+        modIndex = data.modIndex
+    })
+    QBCore.Functions.Notify('Modification applied','success')
+end)
+
+-- REPLACE cosmetic use dispatcher to call new menu (direct)
+RegisterNetEvent('pf-mechanicjob:client:usePart', function(item)
+    local name = type(item) == 'string' and item or (item and item.name)
+    if not name then return end
+    if name == 'tint_supplies' then
+        local veh = nearbyVeh(6.0)
+        if veh == 0 then QBCore.Functions.Notify('No vehicle nearby','error') return end
+        if GetIsVehicleEngineRunning(veh) then QBCore.Functions.Notify('Turn engine off first','error') return end
+        openTintPicker(veh); return
+    end
+    if CosmeticItemMap[name] then
+        TriggerEvent('pf-mechanicjob:client:openItemModMenu', name)
+    else
+        if Config.Debug then print('[COSMETIC] Unknown cosmetic item used: '..tostring(name)) end
+    end
 end)

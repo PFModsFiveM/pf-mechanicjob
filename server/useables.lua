@@ -204,35 +204,65 @@ QBCore.Functions.CreateUseableItem('window_tint', function(src, item)
 end)
 
 -- Optional: cosmetics route to the same handler (requires toolbox)
-QBCore.Functions.CreateUseableItem('bumper', function(src, item)
-    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
-    if not requireToolbox(Player, src) then return end
-    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
-end)
-QBCore.Functions.CreateUseableItem('hood', function(src, item)
-    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
-    if not requireToolbox(Player, src) then return end
-    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
-end)
 QBCore.Functions.CreateUseableItem('spoiler', function(src, item)
-    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
-    if not requireToolbox(Player, src) then return end
-    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'spoiler')
+end)
+QBCore.Functions.CreateUseableItem('bumper', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'bumper')
+end)
+QBCore.Functions.CreateUseableItem('vehicle_bumper', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'vehicle_bumper')
 end)
 QBCore.Functions.CreateUseableItem('skirts', function(src, item)
-    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
-    if not requireToolbox(Player, src) then return end
-    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'skirts')
 end)
 QBCore.Functions.CreateUseableItem('exhaust', function(src, item)
-    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
-    if not requireToolbox(Player, src) then return end
-    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'exhaust')
+end)
+QBCore.Functions.CreateUseableItem('rollcage', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'rollcage')
+end)
+QBCore.Functions.CreateUseableItem('hood', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'hood')
+end)
+QBCore.Functions.CreateUseableItem('roof', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'roof')
+end)
+QBCore.Functions.CreateUseableItem('externals', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'externals')
+end)
+QBCore.Functions.CreateUseableItem('internals', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'internals')
+end)
+QBCore.Functions.CreateUseableItem('livery', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'livery')
+end)
+QBCore.Functions.CreateUseableItem('customplate', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'customplate')
+end)
+QBCore.Functions.CreateUseableItem('seat', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'seat')
+end)
+QBCore.Functions.CreateUseableItem('horn', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'horn')
 end)
 QBCore.Functions.CreateUseableItem('rims', function(src, item)
-    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
-    if not requireToolbox(Player, src) then return end
-    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player or not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', src, 'rims')
 end)
 
 -- Callback for consuming brake pads atomically

@@ -796,7 +796,7 @@ RegisterNetEvent('pf-mechanicjob:client:viewCosmeticMod', function(data)
         local on = IsToggleModOn(veh, modType)
         menu[#menu+1] = {
             header = on and 'Disable' or 'Enable',
-            txt = 'Toggle',
+            -- keep toggle without subtext
             params = {
                 event = 'pf-mechanicjob:client:applyCosmeticToggle',
                 args = { vehicle = veh, modType = modType, enable = not on }
@@ -806,7 +806,7 @@ RegisterNetEvent('pf-mechanicjob:client:viewCosmeticMod', function(data)
         for i=0,count-1 do
             menu[#menu+1] = {
                 header = ('Option #%d'):format(i),
-                txt = 'Apply',
+                -- removed: txt = 'Apply',
                 params = {
                     event = 'pf-mechanicjob:client:applyCosmeticMod',
                     args = { vehicle = veh, modType = modType, index = i }
