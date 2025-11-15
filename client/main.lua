@@ -557,7 +557,7 @@ RegisterNetEvent('pf-mechanicjob:client:useWheels', function(itemName)
                     modIndex = i
                 }
             }
-        }
+          }
     end
     menu[#menu+1] = { header='Close', params={ event='qb-menu:client:closeMenu' } }
     exports['qb-menu']:openMenu(menu)
@@ -1185,4 +1185,14 @@ RegisterNetEvent('pf-mechanicjob:client:usePart', function(item)
     else
         if Config.Debug then print('[COSMETIC] Unknown cosmetic item used: '..tostring(name)) end
     end
+end)
+
+-- /preview should open the original preview menu provided by client/preview.lua
+RegisterCommand('preview', function()
+    TriggerEvent('pf_mech:preview:open')
+end, false)
+
+-- Optional external trigger to open the same original preview menu
+RegisterNetEvent('pf_mech:preview:openMenu', function()
+    TriggerEvent('pf_mech:preview:open')
 end)

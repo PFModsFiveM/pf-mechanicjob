@@ -845,3 +845,113 @@ RegisterNetEvent('pf-mechanicjob:client:applyCosmeticToggle', function(data)
     Wait(300)
     TriggerEvent('pf-mechanicjob:client:openMechanicTools')
 end)
+
+-- Map a performance item to (modType, modIndex, isToggle)
+local function resolvePerformanceItem(item, veh)
+    item = tostring(item or '')
+    if item:match('^engine%d+$') then
+        local lvl = tonumber(item:match('^engine(%d+)$')) or 1
+        return 11, math.max(0, lvl - 1), false
+    elseif item:match('^brakes%d+$') then
+        local lvl = tonumber(item:match('^brakes(%d+)$')) or 1
+        return 12, math.max(0, lvl - 1), false
+    elseif item:match('^transmission%d+$') then
+        local lvl = tonumber(item:match('^transmission(%d+)$')) or 1
+        return 13, math.max(0, lvl - 1), false
+    elseif item:match('^suspension%d+$') then
+        local lvl = tonumber(item:match('^suspension(%d+)$')) or 1
+        local cnt = GetNumVehicleMods(veh, 15)
+        return 15, math.min(math.max(0, lvl - 1), math.max(0, cnt - 1)), false
+    elseif item:match('^armor%d+$') then
+        local lvl = tonumber(item:match('^armor(%d+)$')) or 1
+        local cnt = GetNumVehicleMods(veh, 16)
+        return 16, math.min(math.max(0, lvl - 1), math.max(0, cnt - 1)), false
+    elseif item == 'car_armor' then
+        local cnt = GetNumVehicleMods(veh, 16)
+        if cnt > 0 then
+            return 16, cnt - 1, false  -- max available armor
+        else
+            return 16, -1, false
+        end
+    elseif item == 'turbo' then
+        return 18, 0, true           -- toggle turbo on
+    elseif item == 'headlights' then
+        return 22, 0, true           -- toggle xenon lights on
+    elseif item == 'drifttires' then
+        return -101, 0, true         -- custom toggle (reduce grip)
+    elseif item == 'bprooftires' then
+        return -102, 0, true         -- custom toggle (bulletproof tires)
+    end
+    return nil, nil, nil
+end
+
+-- Use performance item -> apply upgrade via server
+RegisterNetEvent('pf-mechanicjob:client:usePerformanceItem', function(item)
+    local veh = nearbyVeh and nearbyVeh(6.0) or 0
+    if veh == 0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('No vehicle nearby', 'error'); return
+    end
+    if GetIsVehicleEngineRunning(veh) then
+        QBCore.Functions.Notify('Turn engine off first', 'error'); return
+    end
+    SetVehicleModKit(veh, 0)
+
+    local modType, modIndex, isToggle = resolvePerformanceItem(item, veh)
+    if not modType then
+        QBCore.Functions.Notify('Unsupported performance item', 'error'); return
+    end
+
+    -- Clamp index to available options (for non-toggle)
+    if not isToggle and modIndex and modType >= 0 then
+        local count = GetNumVehicleMods(veh, modType)
+        if count <= 0 then
+            QBCore.Functions.Notify('No variants for this vehicle', 'error'); return
+        end
+        modIndex = math.min(modIndex, count - 1)
+    end
+
+    local pretty = (item:gsub('_',' ')):gsub('^%l', string.upper)
+    if not DoProgress('Installing '..pretty..'...', (Config.ActionTimes.setMod or 4500), 'mini@repair', 'fixing_a_ped') then
+        QBCore.Functions.Notify('Installation cancelled', 'error'); return
+    end
+
+    TriggerServerEvent('pf_mech:server:applyPerformanceUpgrade', {
+        vehicle = NetworkGetNetworkIdFromEntity(veh),
+        item = item,
+        modType = modType,
+        modIndex = modIndex,
+        isToggle = isToggle
+    })
+end)
+
+-- Apply upgrade broadcast from server (all clients)
+local function applyUpgrade(payload)
+    if type(payload) ~= 'table' then return end
+    local veh = NetworkGetEntityFromNetworkId(payload.vehicle or 0)
+    if veh == 0 or not DoesEntityExist(veh) then return end
+    SetVehicleModKit(veh, 0)
+
+    if payload.isToggle then
+        if payload.modType == 18 then
+            ToggleVehicleMod(veh, 18, true)                 -- turbo on
+        elseif payload.modType == 22 then
+            ToggleVehicleMod(veh, 22, true)                 -- xenon on
+        elseif payload.modType == -101 then
+            SetVehicleReduceGrip(veh, true)                 -- drift tires
+        elseif payload.modType == -102 then
+            SetVehicleTyresCanBurst(veh, false)             -- bulletproof tires
+        end
+    else
+        local idx = tonumber(payload.modIndex) or -1
+        local mtype = tonumber(payload.modType) or -1
+        if idx >= 0 and mtype >= 0 then
+            local cnt = GetNumVehicleMods(veh, mtype)
+            if cnt > 0 then
+                SetVehicleMod(veh, mtype, math.min(idx, cnt - 1), false)
+            end
+        end
+    end
+end
+
+RegisterNetEvent('pf-mechanicjob:client:upgradeApplied', applyUpgrade)
+RegisterNetEvent('pf_mech:client:upgradeApplied', applyUpgrade)
