@@ -191,31 +191,15 @@ local function openCosmeticsMenu(veh)
     -- Sort cosmetics by label
     table.sort(cosmetics, function(a, b) return a.label < b.label end)
     
-    -- CHANGED: Add clickable entries with current state
+    -- UPDATED: Show "<Label> - [ X Options ]" and make rows non-clickable
     for _, cosmetic in ipairs(cosmetics) do
-        local currentMod = GetVehicleMod(veh, cosmetic.modType)
-        local currentTxt
-        
-        if cosmetic.isToggle then
-            local on = IsToggleModOn(veh, cosmetic.modType)
-            currentTxt = on and 'Currently: On' or 'Currently: Off'
-        else
-            currentTxt = currentMod ~= -1 and ('Current: Option #'..currentMod) or 'Current: Stock'
-        end
-        
+        local bracket = cosmetic.isToggle and '[ On/Off ]' or ('[ %d Options ]'):format(cosmetic.count)
+        local headerText = ('%s - %s'):format(cosmetic.label, bracket)
+
         menu[#menu+1] = {
-            header = string.format('%s (%d options)', cosmetic.label, cosmetic.count),
-            txt = currentTxt,
-            params = {
-                event = 'pf-mechanicjob:client:viewCosmeticMod',
-                args = { 
-                    vehicle = veh, 
-                    modType = cosmetic.modType, 
-                    count = cosmetic.count, 
-                    isToggle = cosmetic.isToggle, 
-                    label = cosmetic.label 
-                }
-            }
+            header = headerText,
+            txt = '',
+            params = {}  -- non-clickable
         }
     end
     
@@ -736,7 +720,6 @@ local function buildMechanicToolsMenu(veh)
     if Config.IsDieselCandidate(veh) then
         local removed = IsDPFRemoved and IsDPFRemoved(veh)
         rows[#rows+1] = { header = '--- Diesel System ---', isMenuHeader = true }
-        
         if removed then
             rows[#rows+1] = {
                 header = 'DPF: Removed',
@@ -763,6 +746,7 @@ local function buildMechanicToolsMenu(veh)
     }
 
     rows[#rows+1] = { header = 'Close', params = { event = 'qb-menu:client:closeMenu' } }
+
     return rows
 end
 
@@ -810,7 +794,7 @@ RegisterNetEvent('pf-mechanicjob:client:viewCosmeticMod', function(data)
                     event = 'pf-mechanicjob:client:applyCosmeticMod',
                     args = { vehicle = veh, modType = modType, index = i }
                 }
-            end
+            }
         end
     end
 
