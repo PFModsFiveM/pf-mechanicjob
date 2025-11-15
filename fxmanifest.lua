@@ -42,7 +42,10 @@ client_scripts {
   'client/garage_sync.lua',
   'client/mileage_hud.lua',
   'client/rolling_coal.lua',
-  'client/mechanictools.lua'
+  'client/mechanictools.lua',
+  -- NEW: enhanced tire smoke
+  'client/tire_smoke.lua',
+  'client/service_book.lua'  -- NEW: service book UI/logic
 }
 
 server_scripts {

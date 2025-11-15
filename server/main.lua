@@ -993,230 +993,102 @@ RegisterNetEvent('pf_mech:server:applyWheels', function(payload)
 end)
 
 -- Service Book: add entry
-RegisterNetEvent('pf_mech:service:addEntry', function(plate, note)
+RegisterNetEvent('pf_mech:service:addEntry', function(plate, data)
     local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-    plate = tostring(plate or ''):upper():gsub('%s+', '')
-    note = tostring(note or ''):sub(1, 500)
-    if plate == '' or note == '' then
-        TriggerClientEvent('pf_mech:toast', src, { text = 'Missing plate or note.' })
+    
+    if not isMechanic(src) then
+        TriggerClientEvent('QBCore:Notify', src, 'Not a mechanic', 'error')
         return
     end
-    local cid = Player.PlayerData.citizenid
-    local author = getNameFromPlayersTable(cid)
+    
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
+    if plate == '' then
+        TriggerClientEvent('QBCore:Notify', src, 'Invalid plate', 'error')
+        return
+    end
 
-    MySQL.insert.await(
-        'INSERT INTO pf_service_log (plate, citizenid, author, note, created_at) VALUES (?, ?, ?, ?, NOW())',
-        { plate, cid, author, note }
+    local title       = tostring(data and data.title or ''):sub(1,80)
+    local serviceText = tostring(data and data.service or ''):sub(1,2000)
+    local svcdesc     = tostring(data and data.service_description or ''):sub(1,2000)
+    local serviced_by = tostring(data and data.serviced_by or ''):sub(1,80)
+    local location    = tostring(data and data.location or ''):sub(1,80)
+    local mileage     = tonumber(data and data.mileage) or 0
+    local model       = tostring(data and data.model or ''):sub(1,60)
+    local color       = tostring(data and data.color or ''):sub(1,40)
+    local paint       = tostring(data and data.paint or ''):sub(1,120)
+    local svcdate     = os.date('%Y-%m-%d')
+
+    if title == '' or serviceText == '' or serviced_by == '' or location == '' then
+        TriggerClientEvent('QBCore:Notify', src, 'Required fields missing', 'error')
+        return
+    end
+
+    local insertId = MySQL.insert.await(
+        'INSERT INTO pf_service_book (plate,model,color,paint,title,service,service_description,svc_date,mileage,serviced_by,location) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        { plate, model, color, paint, title, serviceText, svcdesc, svcdate, mileage, serviced_by, location }
     )
-    TriggerClientEvent('pf_mech:toast', src, { text = 'Service entry saved.' })
+
+    if Config.Debug then
+        print(string.format('[SERVICE BOOK] Inserted id=%s plate=%s title=%s', tostring(insertId), plate, title))
+    end
+
+    TriggerClientEvent('QBCore:Notify', src, 'Service entry saved', 'success')
+    Wait(120)
+    TriggerClientEvent('pf_mech:service:refresh', src, plate)
 end)
 
--- Service Book: get entries
+-- Service Book: get entries (FINAL - actually queries database)
 QBCore.Functions.CreateCallback('pf_mech:service:get', function(source, cb, plate)
-    plate = tostring(plate or ''):upper():gsub('%s+', '')
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
     if plate == '' then cb({}) return end
+    
     local rows = MySQL.query.await(
-        'SELECT author, note, DATE_FORMAT(created_at,"%Y-%m-%d %H:%i") AS at FROM pf_service_log WHERE plate = ? ORDER BY created_at DESC LIMIT 20',
+        'SELECT id, plate, model, paint, title, service, service_description, svc_date, mileage, serviced_by, location FROM pf_service_book WHERE plate = ? ORDER BY id DESC LIMIT 50',
         { plate }
     ) or {}
+    if Config.Debug then
+        print(string.format('[SERVICE BOOK] Fetch %d rows for %s', #rows, plate))
+    end
     cb(rows)
 end)
 
--- Helper: ensure all businesses exist in database
-local function ensureAllBusinesses()
-    for jobName, branding in pairs(Config.BusinessBranding or {}) do
-        local row = MySQL.single.await('SELECT business FROM pf_business WHERE business = ? LIMIT 1', { branding.business })
-        if not row then
-            MySQL.insert.await(
-                'INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, open, tax) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                {
-                    branding.business,
-                    branding.name,
-                    branding.primary_color,
-                    branding.secondary_color,
-                    branding.logo or '',
-                    branding.open or 1,
-                    branding.tax or 0.05
-                }
-            )
-        end
-    end
+-- SERVICE BOOK TABLE ENSURE (REPLACED - now creates/updates needed columns)
+local function ensureServiceBookTable()
+    MySQL.query.await([[
+        CREATE TABLE IF NOT EXISTS pf_service_book (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            plate VARCHAR(16) NOT NULL,
+            model VARCHAR(60) NOT NULL DEFAULT '',
+            color VARCHAR(40) NOT NULL DEFAULT '',
+            paint VARCHAR(120) NOT NULL DEFAULT '',
+            title VARCHAR(80) NOT NULL,
+            service TEXT NOT NULL,
+            service_description TEXT NOT NULL,
+            svc_date VARCHAR(32) NOT NULL,
+            mileage INT NOT NULL DEFAULT 0,
+            serviced_by VARCHAR(80) NOT NULL DEFAULT '',
+            location VARCHAR(80) NOT NULL DEFAULT '',
+            KEY plate_idx (plate)
+        )
+    ]])
 end
 
--- END OF FILE
-
--- Allow clients to request a server-side statebag write (fallback for older artifacts)
-RegisterNetEvent('pf_mech:server:setState', function(netId, key, value)
-    local src = source
-    if not netId or not key then return end
-    local ent = NetworkGetEntityFromNetworkId(netId)
-    if not ent or ent == 0 or not DoesEntityExist(ent) then return end
-
-    -- Optional: only allow driver/nearby or owner – kept simple here.
-    local st = Entity(ent).state
-    if st and st.set then
-        st:set(tostring(key), value, true)
-    end
-end)
-
--- Relay welding VFX start/stop to all clients (sync prop net id)
-RegisterNetEvent('pf_mech:weld:start', function(netId)
-    if not netId then return end
-    -- Broadcast to all clients
-    TriggerClientEvent('pf_mech:weld:start', -1, netId)
-end)
-
-RegisterNetEvent('pf_mech:weld:stop', function(netId)
-    if not netId then return end
-    TriggerClientEvent('pf_mech:weld:stop', -1, netId)
-end)
-
-RegisterNetEvent('pf_mech:vfx:oneshot', function(data)
-    -- Optionally validate payload here
-    TriggerClientEvent('pf_mech:vfx:oneshot', -1, data)
-end)
-
--- NEW: Check if player has toolbox in inventory
-QBCore.Functions.CreateCallback('pf_mech:hasToolbox', function(source, cb)
-    local Player = QBCore.Functions.GetPlayer(source)
-    if not Player then cb(false); return end
-    
-    local item = Player.Functions.GetItemByName('toolbox')
-    cb(item ~= nil)
-end)
-
--- =========================
--- PREVIEW RECEIPT GENERATION
--- =========================
-RegisterNetEvent('pf_mech:server:generatePreviewReceipt', function(data)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-
-    -- Build description from modifications
-    local desc = 'Vehicle Preview Modifications:\n\n'
-    if data.modifications and #data.modifications > 0 then
-        for _, mod in ipairs(data.modifications) do
-            desc = desc .. string.format('• %s: %s\n', mod.category or 'Unknown', mod.value or 'None')
+AddEventHandler('onResourceStart', function(res)
+    if res ~= resource then return end
+    ensureServiceBookTable()
+    ensureAllBusinesses()
+    -- Seed POS items per business if empty
+    for key, branding in pairs(Config.BusinessBranding or {}) do
+        local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { branding.business }) or 0
+        if cnt == 0 and Config.CatalogSeed then
+            for _, it in ipairs(Config.CatalogSeed) do
+                MySQL.insert.await(
+                    'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
+                    { branding.business, it.id, it.category, it.label, it.price }
+                )
+            end
         end
-    else
-        desc = desc .. 'No modifications previewed.\n'
     end
-    
-    desc = desc .. string.format('\nVehicle: %s\nPlate: %s\n', data.vehicleModel or 'Unknown', data.plate or 'Unknown')
-    desc = desc .. string.format('Previewed by: %s [%s]\nDate: %s', 
-        Player.PlayerData.charinfo.firstname .. ' ' .. Player.PlayerData.charinfo.lastname,
-        Player.PlayerData.citizenid,
-        os.date('%Y-%m-%d %H:%M:%S')
-    )
-
-    -- Give receipt item if enabled and item exists
-    if Config.PreviewReceipt.enabled and Config.PreviewReceipt.itemName then
-        local info = {
-            description = desc,
-            modifications = data.modifications or {},
-            vehicle = data.vehicleModel or 'Unknown',
-            plate = data.plate or 'Unknown',
-            timestamp = os.time()
-        }
-        Player.Functions.AddItem(Config.PreviewReceipt.itemName, 1, false, info)
-        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[Config.PreviewReceipt.itemName], 'add', 1)
-    end
-
-    -- Send Discord webhook if configured
-    if Config.PreviewReceipt.webhookURL and Config.PreviewReceipt.webhookURL ~= '' then
-        local embed = {
-            {
-                ['title'] = Config.PreviewReceipt.webhookTitle or '🔧 Vehicle Preview Receipt',
-                ['color'] = Config.PreviewReceipt.webhookColor or 3447003,
-                ['description'] = desc,
-                ['footer'] = {
-                    ['text'] = Config.PreviewReceipt.webhookFooter or 'Preview System'
-                },
-                ['timestamp'] = os.date('!%Y-%m-%dT%H:%M:%S')
-            }
-        }
-        
-        PerformHttpRequest(Config.PreviewReceipt.webhookURL, function(err, text, headers) end, 'POST', json.encode({
-            username = 'Mechanic Preview System',
-            embeds = embed
-        }), { ['Content-Type'] = 'application/json' })
-    end
-end)
-
-RegisterNetEvent('pf_mech:givePreviewReceipt', function(receiptData)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player or not receiptData then return end
-    
-    -- Build description from changes
-    local desc = string.format('Preview Session - %s (%s)\n', 
-        receiptData.vehicle or 'Unknown', 
-        receiptData.plate or 'N/A'
-    )
-    desc = desc .. string.format('Date: %s\n', os.date('%Y-%m-%d %H:%M:%S', receiptData.timestamp))
-    desc = desc .. string.format('Changes Made: %d\n\n', receiptData.changeCount)
-    
-    for i, change in ipairs(receiptData.changes) do
-        desc = desc .. string.format('%d. %s\n', i, change.name)
-        desc = desc .. string.format('   From: %s\n', change.from)
-        desc = desc .. string.format('   To: %s\n', change.to)
-    end
-    
-    -- Give receipt item with metadata
-    local info = {
-        description = desc,
-        vehicle = receiptData.vehicle,
-        plate = receiptData.plate,
-        timestamp = receiptData.timestamp,
-        changes = receiptData.changeCount
-    }
-    
-    Player.Functions.AddItem(Config.PreviewReceipt.itemName, 1, false, info)
-    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[Config.PreviewReceipt.itemName], 'add')
-    
-    -- Optional: Discord webhook
-    if Config.PreviewReceipt.webhookURL and Config.PreviewReceipt.webhookURL ~= '' then
-        local embed = {
-            {
-                ['title'] = Config.PreviewReceipt.webhookTitle,
-                ['color'] = Config.PreviewReceipt.webhookColor,
-                ['footer'] = {['text'] = Config.PreviewReceipt.webhookFooter},
-                ['description'] = desc,
-                ['fields'] = {
-                    {['name']='Player', ['value']=GetPlayerName(src), ['inline']=true},
-                    {['name']='ID', ['value']=tostring(src), ['inline']=true},
-                    {['name']='Changes', ['value']=tostring(receiptData.changeCount), ['inline']=true},
-                }
-            }
-        }
-        PerformHttpRequest(Config.PreviewReceipt.webhookURL, function() end, 'POST', 
-            json.encode({embeds = embed}), {['Content-Type'] = 'application/json'})
-    end
-end)
-
--- Give modification sheet / preview receipt
-RegisterNetEvent('pf_mech:giveModificationSheet', function(data)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-
-    -- Use item name from config, default to 'preview_receipt'
-    local itemName = (Config.PreviewReceipt and Config.PreviewReceipt.itemName) or 'preview_receipt'
-    
-    local info = {
-        vehicle = data.vehicle or "Unknown Vehicle",
-        plate = data.plate or "N/A",
-        description = data.description or "No changes recorded",
-        timestamp = os.time()
-    }
-
-    -- Add the item with metadata
-    Player.Functions.AddItem(itemName, 1, false, info)
-    TriggerClientEvent('QBCore:Notify', src, 'Preview Receipt added to your inventory.', 'success')
-    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], 'add', 1)
 end)
 
 -- ============================================================================
@@ -1420,5 +1292,102 @@ RegisterNetEvent('pf_mech:server:applyPerformanceUpgrade', function(data)
     -- Show item box
     TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
     TriggerClientEvent('QBCore:Notify', src, 'Upgrade installed', 'success')
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SERVICE BOOK - SINGLE SOURCE OF TRUTH
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Service Book: table ensure (reverted working version)
+local function ensureServiceBookTable()
+    MySQL.query.await([[
+        CREATE TABLE IF NOT EXISTS pf_service_book (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            plate VARCHAR(16) NOT NULL,
+            model VARCHAR(60) NOT NULL DEFAULT '',
+            color VARCHAR(40) NOT NULL DEFAULT '',
+            paint VARCHAR(120) NOT NULL DEFAULT '',
+            title VARCHAR(80) NOT NULL,
+            service TEXT NOT NULL,
+            service_description TEXT NOT NULL,
+            svc_date VARCHAR(32) NOT NULL,
+            mileage INT NOT NULL DEFAULT 0,
+            serviced_by VARCHAR(80) NOT NULL DEFAULT '',
+            location VARCHAR(80) NOT NULL DEFAULT '',
+            KEY plate_idx (plate)
+        )
+    ]])
+end
+
+AddEventHandler('onResourceStart', function(res)
+    if res ~= resource then return end
+    ensureServiceBookTable()
+    -- Seed POS items per business if empty
+    for key, branding in pairs(Config.BusinessBranding or {}) do
+        local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { branding.business }) or 0
+        if cnt == 0 and Config.CatalogSeed then
+            for _, it in ipairs(Config.CatalogSeed) do
+                MySQL.insert.await(
+                    'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
+                    { branding.business, it.id, it.category, it.label, it.price }
+                )
+            end
+        end
+    end
+end)
+
+local function isMechanic(src)
+    local p = QBCore.Functions.GetPlayer(src)
+    return p and p.PlayerData and p.PlayerData.job and Config.IsMechanicJob(p.PlayerData.job.name) or false
+end
+
+-- SINGLE handler: add entry
+RegisterNetEvent('pf_mech:service:addEntry', function(plate, data)
+    local src = source
+    if not isMechanic(src) then
+        TriggerClientEvent('QBCore:Notify', src, 'Not a mechanic', 'error')
+        return
+    end
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
+    if plate == '' then
+        TriggerClientEvent('QBCore:Notify', src, 'Invalid plate', 'error')
+        return
+    end
+
+    local title       = tostring(data.title or ''):sub(1,80)
+    local serviceText = tostring(data.service or ''):sub(1,2000)
+    local svcdesc     = tostring(data.service_description or ''):sub(1,2000)
+    local serviced_by = tostring(data.serviced_by or ''):sub(1,80)
+    local location    = tostring(data.location or ''):sub(1,80)
+    local mileage     = tonumber(data.mileage) or 0
+    local model       = tostring(data.model or ''):sub(1,60)
+    local color       = tostring(data.color or ''):sub(1,40)
+    local paint       = tostring(data.paint or ''):sub(1,120)
+    local svcdate     = os.date('%Y-%m-%d')
+
+    if title=='' or serviceText=='' or serviced_by=='' or location=='' then
+        TriggerClientEvent('QBCore:Notify', src, 'Required fields missing', 'error')
+        return
+    end
+
+    MySQL.insert.await(
+        'INSERT INTO pf_service_book (plate,model,color,paint,title,service,service_description,svc_date,mileage,serviced_by,location) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        { plate, model, color, paint, title, serviceText, svcdesc, svcdate, mileage, serviced_by, location }
+    )
+
+    TriggerClientEvent('QBCore:Notify', src, 'Service entry saved', 'success')
+    Wait(100)
+    TriggerClientEvent('pf_mech:service:refresh', src, plate)
+end)
+
+-- SINGLE callback: get entries
+QBCore.Functions.CreateCallback('pf_mech:service:get', function(source, cb, plate)
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
+    if plate == '' then cb({}) return end
+    local rows = MySQL.query.await(
+        'SELECT id, plate, model, paint, title, service, service_description, svc_date, mileage, serviced_by, location FROM pf_service_book WHERE plate = ? ORDER BY id DESC LIMIT 50',
+        { plate }
+    ) or {}
+    cb(rows)
 end)
 
