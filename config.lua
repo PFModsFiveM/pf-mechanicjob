@@ -38,15 +38,7 @@ Config.PublicItems = {
 
 -- Items that DON'T require a toolbox
 Config.NoToolboxRequired = {
-    'paintcan',
-    'paint_kit',
-    'coolant',
-    'newoil',
-    'engine_oil',
-    'carbattery',
-    'brakefluid',
-    'mechanic_tools',
-    'diagnostics_tool',
+    -- Only UI/tablet items remain exempt
     'mech_tablet',
     'mechanic_tablet',
 }

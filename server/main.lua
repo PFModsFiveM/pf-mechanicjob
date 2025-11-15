@@ -799,23 +799,37 @@ local function RegisterItems()
         'rims'
     }
     
-    -- Register cosmetic items
+    -- CHANGED: require toolbox for all
     for _, item in ipairs(cosmeticItems) do
         QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
+            if not playerHasToolbox(source) then
+                TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
+                return
+            end
             TriggerClientEvent('pf-mechanicjob:client:usePart', source, itemInfo)
         end)
     end
     
-    -- Register paint/tint items
     for _, item in ipairs(paintItems) do
         QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
-            TriggerClientEvent('pf-mechanicjob:client:usePaint', source, item)
+            if not playerHasToolbox(source) then
+                TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
+                return
+            end
+            if item == 'paint_kit' then
+                TriggerClientEvent('pf-mechanicjob:client:usePaint', source, item)
+            else
+                TriggerClientEvent('pf-mechanicjob:client:usePart', source, itemInfo)
+            end
         end)
     end
     
-    -- Register wheel items
     for _, item in ipairs(wheelItems) do
         QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
+            if not playerHasToolbox(source) then
+                TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
+                return
+            end
             TriggerClientEvent('pf-mechanicjob:client:useWheels', source, item)
         end)
     end

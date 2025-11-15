@@ -762,9 +762,29 @@ end)
 
 -- REMOVE duplicated welding helpers previously at bottom; they are now hoisted above.
 
--- Helper: Clean up clipboard when menu closes (also stop welder and mark menu closed)
+-- NEW: Cleanup helper for clipboard/notepad animation + prop
+local function CleanupClipboard()
+    local ped = PlayerPedId()
+    -- stop anim
+    ClearPedTasks(ped)
+    -- delete clipboard prop if attached
+    if currentClipboard and DoesEntityExist(currentClipboard) then
+        DeleteEntity(currentClipboard)
+        currentClipboard = nil
+    end
+end
+
+-- FIX: Clean up clipboard/notepad when menu closes (Close button or ESC)
 RegisterNetEvent('qb-menu:client:closeMenu', function()
     StopWeld()
+    CleanupClipboard()  -- NEW
+end)
+
+-- NEW: Cleanup on resource stop to prevent stuck anim/prop if menu open
+AddEventHandler('onResourceStop', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    StopWeld()
+    CleanupClipboard()
 end)
 
 -- NEW: Handler for server requesting brake cache reset

@@ -18,6 +18,17 @@ local function isAllowedJob(Player, itemName)
     return false
 end
 
+-- NEW: server-side toolbox gate
+local function requireToolbox(Player, src)
+    if not Player then return false end
+    local tb = Player.Functions.GetItemByName('toolbox')
+    if not tb then
+        TriggerClientEvent('QBCore:Notify', src, 'You need a toolbox to do mechanic work', 'error')
+        return false
+    end
+    return true
+end
+
 -- Make brake_pads usable and trigger client logic
 QBCore.Functions.CreateUseableItem('brake_pads', function(source)
     local Player = QBCore.Functions.GetPlayer(source)
@@ -31,21 +42,22 @@ QBCore.Functions.CreateUseableItem('brake_pads', function(source)
     TriggerClientEvent('qb-core:client:use:brake_pads', source)
 end)
 
--- Make mechanic_tools usable (FIXED)
+-- Make mechanic_tools usable (FIXED - single registration with toolbox check)
 QBCore.Functions.CreateUseableItem('mechanic_tools', function(source)
     local Player = QBCore.Functions.GetPlayer(source)
     if not Player then return end
     
-    print('[SERVER DEBUG] mechanic_tools used by player ' .. source)
+    if Config.Debug then
+        print('[SERVER DEBUG] mechanic_tools used by player ' .. source)
+    end
     
-    -- Check if player is a mechanic
     if not isAllowedJob(Player, 'mechanic_tools') then
         TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
         return
     end
     
-    -- Trigger the inspection event from tools_menu.lua
-    TriggerClientEvent('pf-mechanicjob:client:openMechanicTools', source)  -- Opens performance/cosmetic menu
+    if not requireToolbox(Player, source) then return end
+    TriggerClientEvent('pf-mechanicjob:client:openMechanicTools', source)
 end)
 
 -- Make alternator usable
@@ -57,7 +69,7 @@ QBCore.Functions.CreateUseableItem('alternator', function(source)
         TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
         return
     end
-    
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:alternator', source)
 end)
 
@@ -65,6 +77,7 @@ end)
 QBCore.Functions.CreateUseableItem('engine_oil', function(source)
     local Player = QBCore.Functions.GetPlayer(source)
     if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:engine_oil', source)
 end)
 
@@ -72,61 +85,87 @@ end)
 QBCore.Functions.CreateUseableItem('oil_filter', function(source)
     local Player = QBCore.Functions.GetPlayer(source)
     if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:oil_filter', source)
 end)
 
--- diagnostics tool (same as mechanic_tools)
+-- diagnostics tool (requires toolbox)
 QBCore.Functions.CreateUseableItem('diagnosticstool', function(source)
     local Player = QBCore.Functions.GetPlayer(source)
     if not Player then return end
-    if Player.PlayerData.job.name ~= 'mechanic' then
+    if not isAllowedJob(Player, 'diagnosticstool') then
         TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
         return
     end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', source)
 end)
 
--- repair_kit
+-- repair_kit (requires toolbox)
 QBCore.Functions.CreateUseableItem('repair_kit', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:useRepairKit', source)
 end)
 
 -- fuel_injector
 QBCore.Functions.CreateUseableItem('fuel_injector', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:fuel_injector', source)
 end)
 
 -- powersteeringpump
 QBCore.Functions.CreateUseableItem('powersteeringpump', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:powersteeringpump', source)
 end)
 
 -- radiator
 QBCore.Functions.CreateUseableItem('radiator', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:radiator', source)
 end)
 
 -- power_steering_fluid
 QBCore.Functions.CreateUseableItem('power_steering_fluid', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:power_steering_fluid', source)
 end)
 
 -- transmissionfluid
 QBCore.Functions.CreateUseableItem('transmissionfluid', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:transmissionfluid', source)
 end)
 
 -- brakefluid
 QBCore.Functions.CreateUseableItem('brakefluid', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:brakefluid', source)
 end)
 
 -- coolant
 QBCore.Functions.CreateUseableItem('coolant', function(source)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then return end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:coolant', source)
 end)
 
--- service_book
+-- service_book (no modification; leave as-is)
 QBCore.Functions.CreateUseableItem('service_book', function(source)
     TriggerClientEvent('pf-mechanicjob:client:use:service_book', source)
 end)
@@ -140,30 +179,61 @@ QBCore.Functions.CreateUseableItem('tire_new', function(source)
         TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
         return
     end
-
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:use:tire_new', source)
 end)
 
--- Window tint supplies -> open client tint picker
+-- Window tint supplies -> open client tint picker (requires toolbox)
 QBCore.Functions.CreateUseableItem('tint_supplies', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    if not requireToolbox(Player, src) then return end
     TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
 end)
-
--- Optional: legacy/aliases
 QBCore.Functions.CreateUseableItem('tint', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    if not requireToolbox(Player, src) then return end
     TriggerClientEvent('pf-mechanicjob:client:usePart', src, { name = 'tint_supplies', label = item.label })
 end)
 QBCore.Functions.CreateUseableItem('window_tint', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    if not requireToolbox(Player, src) then return end
     TriggerClientEvent('pf-mechanicjob:client:usePart', src, { name = 'tint_supplies', label = item.label })
 end)
 
--- Optional: cosmetics route to the same handler
-QBCore.Functions.CreateUseableItem('bumper', function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
-QBCore.Functions.CreateUseableItem('hood',   function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
-QBCore.Functions.CreateUseableItem('spoiler',function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
-QBCore.Functions.CreateUseableItem('skirts', function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
-QBCore.Functions.CreateUseableItem('exhaust',function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
-QBCore.Functions.CreateUseableItem('rims',   function(src, item) TriggerClientEvent('pf-mechanicjob:client:usePart', src, item) end)
+-- Optional: cosmetics route to the same handler (requires toolbox)
+QBCore.Functions.CreateUseableItem('bumper', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
+    if not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+end)
+QBCore.Functions.CreateUseableItem('hood', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
+    if not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+end)
+QBCore.Functions.CreateUseableItem('spoiler', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
+    if not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+end)
+QBCore.Functions.CreateUseableItem('skirts', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
+    if not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+end)
+QBCore.Functions.CreateUseableItem('exhaust', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
+    if not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+end)
+QBCore.Functions.CreateUseableItem('rims', function(src, item)
+    local Player = QBCore.Functions.GetPlayer(src); if not Player then return end
+    if not requireToolbox(Player, src) then return end
+    TriggerClientEvent('pf-mechanicjob:client:usePart', src, item)
+end)
 
 -- Callback for consuming brake pads atomically
 QBCore.Functions.CreateCallback('pf-mechanicjob:server:consumeBrakePad', function(source, cb)
@@ -188,22 +258,7 @@ QBCore.Functions.CreateCallback('pf-mechanicjob:server:consumeBrakePad', functio
     end
 end)
 
--- Register mechanic toolbox
-QBCore.Functions.CreateUseableItem('mechanic_tools', function(source, item)
-    local Player = QBCore.Functions.GetPlayer(source)
-    if not Player then return end
-    
-    -- Check if player is mechanic
-    if not Config.IsMechanicJob(Player.PlayerData.job.name) then
-        TriggerClientEvent('QBCore:Notify', source, 'You must be a mechanic', 'error')
-        return
-    end
-    
-    -- Open tools menu
-    TriggerClientEvent('pf_mech:client:openTools', source)
-end)
-
--- Register all repair items as useable
+-- Register all repair items as useable (enforce toolbox)
 local repairItems = {
     'alternator',
     'engine_oil',
@@ -227,22 +282,14 @@ local repairItems = {
 
 for _, itemName in ipairs(repairItems) do
     QBCore.Functions.CreateUseableItem(itemName, function(source, item)
+        local Player = QBCore.Functions.GetPlayer(source)
+        if not Player then return end
+        if not requireToolbox(Player, source) then return end
         TriggerClientEvent('pf-mechanicjob:client:useRepairItem', source, itemName)
     end)
 end
 
--- REMOVE duplicate earlier mechanic_tools registration blocks (keep only this one)
-QBCore.Functions.CreateUseableItem('mechanic_tools', function(source)
-    local Player = QBCore.Functions.GetPlayer(source)
-    if not Player then return end
-    if not isAllowedJob(Player, 'mechanic_tools') then
-        TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
-        return
-    end
-    TriggerClientEvent('pf-mechanicjob:client:openMechanicTools', source)  -- Opens performance/cosmetic menu
-end)
-
--- CHANGED: diagnostics_tool opens inspection flow (leads to diagnostics menu with health)
+-- CHANGED: diagnostics_tool opens inspection flow (requires toolbox)
 QBCore.Functions.CreateUseableItem('diagnostics_tool', function(source)
     local Player = QBCore.Functions.GetPlayer(source)
     if not Player then return end
@@ -250,5 +297,6 @@ QBCore.Functions.CreateUseableItem('diagnostics_tool', function(source)
         TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
         return
     end
+    if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', source)  -- Opens inspection → diagnostics health menu
 end)
