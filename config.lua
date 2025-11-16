@@ -493,11 +493,48 @@ Config.NOS = {
     levelDown = 173,
   },
 
-  -- CHANGED: Much higher values (0.08-0.15 range for strong boost)
+  -- CHANGED: Updated with damage per second from image
   levels = {
-    [1] = { torqueMult = 1.02, powerMult = 1.3, drainPerSec = 12, damagePerSec = 0.15 },
-    [2] = { torqueMult = 1.04, powerMult = 1.5, drainPerSec = 18, damagePerSec = 0.3 },
-    [3] = { torqueMult = 1.06, powerMult = 1.7, drainPerSec = 25, damagePerSec = 0.5 },
+    [1] = { 
+      torqueMult = 1.02, 
+      powerMult = 1.3, 
+      drainPerSec = 12,
+      -- Damage per second while boosting (from image)
+      damagePerSec = {
+        engine_part = 0.20,      -- Engine Part: 0.20%
+        sparkplugs = 0.30,       -- Spark Plugs: 0.30%
+        fuel_injector = 0.15,    -- Fuel Injector: 0.15%
+        engine_oil = 0.05,       -- Engine Oil: 0.05%
+        axle = 0.05,             -- Axle Parts: 0.05% (only if spraying in 1st/2nd gear)
+        heatPenalty = 0.10       -- Heat Penalty: Add 0.10% Engine Part per second when temp high
+      }
+    },
+    [2] = { 
+      torqueMult = 1.04, 
+      powerMult = 1.5, 
+      drainPerSec = 18,
+      damagePerSec = {
+        engine_part = 0.45,
+        sparkplugs = 0.60,
+        fuel_injector = 0.35,
+        engine_oil = 0.10,
+        axle = 0.15,
+        heatPenalty = 0.25
+      }
+    },
+    [3] = { 
+      torqueMult = 1.06, 
+      powerMult = 1.7, 
+      drainPerSec = 25,
+      damagePerSec = {
+        engine_part = 0.90,
+        sparkplugs = 1.20,
+        fuel_injector = 0.80,
+        engine_oil = 0.20,
+        axle = 0.30,
+        heatPenalty = 0.50
+      }
+    },
   },
 
   purge = {

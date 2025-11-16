@@ -74,3 +74,38 @@ RegisterNetEvent('pf_mech:nos:updateLevel', function(netId, level)
     st.level = math.max(0, math.min(CAPACITY, tonumber(level) or 0))
     Entity(veh).state:set('nos', st, true)
 end)
+
+-- NEW: Apply accumulated damage from client
+RegisterNetEvent('pf_mech:nos:applyDamage', function(plate, damage)
+    local src = source
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' or not damage then return end
+    
+    -- Find vehicle by plate
+    local vehicles = GetAllVehicles()
+    for _, veh in ipairs(vehicles) do
+        if DoesEntityExist(veh) then
+            local vehPlate = GetVehicleNumberPlateText(veh):gsub('%s+', ''):upper()
+            if vehPlate == plate then
+                -- Apply accumulated damage to state
+                local state = Entity(veh).state
+                local partDamage = state.partDamage or {}
+                
+                for key, dmg in pairs(damage) do
+                    partDamage[key] = math.min(100, (tonumber(partDamage[key]) or 0) + tonumber(dmg))
+                end
+                
+                state:set('partDamage', partDamage, true)
+                
+                if Config.Debug then
+                    print(string.format('[NOS SERVER] Applied damage to %s: engine=%.2f%% spark=%.2f%%', 
+                        plate, 
+                        partDamage.engine_part or 0,
+                        partDamage.sparkplugs or 0))
+                end
+                
+                return
+            end
+        end
+    end
+end)

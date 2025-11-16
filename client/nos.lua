@@ -3,7 +3,12 @@ local cfg = Config.NOS or {}
 
 -- Track active sounds to force cleanup
 local activeSounds = {}
-local emptyBottleGiven = {}  -- Track which vehicles already gave empty bottle
+local emptyBottleGiven = {}
+
+-- NEW: Local damage accumulator (prevents state bag flooding)
+local damageAccumulator = {}
+local lastDamageSync = 0
+local DAMAGE_SYNC_INTERVAL = 2000  -- Sync to server every 2 seconds
 
 -- Particle helpers
 local function LoadPtfxAsset(dict)
@@ -124,7 +129,7 @@ RegisterNetEvent('pf_mech:nos:install', function()
     QBCore.Functions.Notify('NOS installed','success')
 end)
 
--- BOOST CONTROLLER (FIXED: throttle force application)
+-- BOOST CONTROLLER (FIXED: batch damage updates)
 CreateThread(function()
     local keyBoost     = (cfg.keys and cfg.keys.boost) or 21
     local keyPurge     = (cfg.keys and cfg.keys.purge) or 36
@@ -135,7 +140,7 @@ CreateThread(function()
     local trailFx = {}
     local cooldownUntil = 0
     local lastVehicle = 0
-    local lastForceApply = 0  -- NEW: throttle force
+    local lastForceApply = 0
 
     while true do
         Wait(0)
@@ -277,6 +282,10 @@ CreateThread(function()
                         trailFx[#trailFx+1] = fx
                     end
                 end
+                
+                -- Initialize accumulator for this vehicle
+                local plate = GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
+                damageAccumulator[plate] = damageAccumulator[plate] or {}
             end
 
             -- CHANGED: Only apply force every 50ms (not every frame)
@@ -295,32 +304,87 @@ CreateThread(function()
             nos.level = math.max(0, nos.level - drain)
             Entity(veh).state:set('nos', nos, true)
 
-            -- Engine damage
+            -- CHANGED: Accumulate damage locally (no state updates)
+            local damageConfig = levelCfg.damagePerSec or {}
+            local plate = GetVehicleNumberPlateText(veh):gsub('%s+',''):upper()
+            local acc = damageAccumulator[plate] or {}
+            
+            -- Calculate per-frame damage (divide by 60 for 60 FPS)
+            local engineDmg = (damageConfig.engine_part or 0.20) / 60.0
+            local sparkDmg = (damageConfig.sparkplugs or 0.30) / 60.0
+            local fuelDmg = (damageConfig.fuel_injector or 0.15) / 60.0
+            local oilDmg = (damageConfig.engine_oil or 0.05) / 60.0
+            local axleDmg = (damageConfig.axle or 0.05) / 60.0
+            
+            -- Check if in low gear (1st or 2nd) for axle damage
+            local gear = GetVehicleCurrentGear(veh)
+            local inLowGear = (gear == 1 or gear == 2)
+            
+            -- Check engine temp for heat penalty
+            local engineTemp = GetVehicleEngineTemperature(veh) or 90.0
+            local overheating = engineTemp > 110.0
+            local heatPenalty = overheating and ((damageConfig.heatPenalty or 0.1) / 60.0) or 0.0
+            
+            -- Accumulate damage (don't write to state yet)
+            acc.engine_part = (acc.engine_part or 0) + engineDmg + heatPenalty
+            acc.sparkplugs = (acc.sparkplugs or 0) + sparkDmg
+            acc.fuel_injector = (acc.fuel_injector or 0) + fuelDmg
+            acc.oil = (acc.oil or 0) + oilDmg
+            
+            if inLowGear then
+                acc.axle = (acc.axle or 0) + axleDmg
+            end
+            
+            damageAccumulator[plate] = acc
+            
+            -- Sync accumulated damage to server every 2 seconds
+            if (now - lastDamageSync) >= DAMAGE_SYNC_INTERVAL then
+                lastDamageSync = now
+                TriggerServerEvent('pf_mech:nos:applyDamage', plate, acc)
+                -- Reset accumulator after sync
+                damageAccumulator[plate] = {}
+            end
+            
+            -- Also apply GTA engine health damage (visual)
+            local gta_eng_dmg = ((damageConfig.engine_part or 0.20) / 60.0) * 10.0
             local eng = GetVehicleEngineHealth(veh)
-            SetVehicleEngineHealth(veh, eng - ((levelCfg.damagePerSec or 0.15) / 60.0))
+            SetVehicleEngineHealth(veh, eng - gta_eng_dmg)
 
-            -- Backfire flames (random)
+            -- Backfire
             if math.random(100) < 15 then
                 VehicleBackfire(veh)
             end
 
-            -- Sync to server
+            -- Sync NOS level to server
             if now - lastSync > 2000 then
                 lastSync = now
                 TriggerServerEvent('pf_mech:nos:updateLevel', NetworkGetNetworkIdFromEntity(veh), nos.level)
             end
 
             -- Check empty
-            if nos.level <= 0 then
+            if nos.level <= 0 and not emptyBottleGiven[veh] then
+                emptyBottleGiven[veh] = true
+                
                 boosting = false
                 SetVehicleBoostActive(veh,false)
+                SetVehicleCheatPowerIncrease(veh,1.0)
                 ScreenEffectToggle(false)
+                CleanupSounds()
+                
+                for _, fx in ipairs(trailFx) do
+                    if fx and DoesParticleFxLoopedExist(fx) then
+                        StopParticleFxLooped(fx, false)
+                    end
+                end
+                trailFx = {}
+                
+                if Config.Debug then
+                    print('[NOS CLIENT] NOS depleted, requesting empty bottle (once)')
+                end
                 
                 TriggerServerEvent('pf_mech:nos:giveEmpty')
-                Wait(100)
                 
-                QBCore.Functions.Notify('NOS empty - received empty bottle','error',3000)
-                TriggerEvent('hud:client:UpdateNitrous', false, 0, 0)
+                Wait(200)
                 
                 Entity(veh).state:set('nos', {
                     has=false,
@@ -332,12 +396,8 @@ CreateThread(function()
                     lastBoostEnd=0
                 }, true)
                 
-                for _, fx in ipairs(trailFx) do
-                    if fx and DoesParticleFxLoopedExist(fx) then
-                        StopParticleFxLooped(fx, false)
-                    end
-                end
-                trailFx = {}
+                QBCore.Functions.Notify('NOS empty - check inventory for empty bottle','error',4000)
+                TriggerEvent('hud:client:UpdateNitrous', false, 0, 0)
             end
         else
             if IsControlJustPressed(0,keyBoost) and currentLevel > 0 and speed < 50.0 and not onCooldown then
