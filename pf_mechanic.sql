@@ -116,5 +116,11 @@ CREATE TABLE IF NOT EXISTS `pf_service_log` (
   KEY `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- NOS: persist basic state on the base vehicle table (idempotent)
+ALTER TABLE `player_vehicles`
+  ADD COLUMN IF NOT EXISTS `hasnitrom` TINYINT(1) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS `noslevel`  INT        NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS `noscolor`  VARCHAR(16) NULL DEFAULT NULL;
+
 -- Optional: If you want mileage persisted in DB (alternatively use entity statebag)
-ALTER TABLE `player_vehicles` ADD COLUMN `mileage` FLOAT DEFAULT 0.0;
+ALTER TABLE `player_vehicles` ADD COLUMN IF NOT EXISTS `mileage` FLOAT DEFAULT 0.0;

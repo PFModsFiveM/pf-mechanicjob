@@ -1076,7 +1076,6 @@ end
 AddEventHandler('onResourceStart', function(res)
     if res ~= resource then return end
     ensureServiceBookTable()
-    ensureAllBusinesses()
     -- Seed POS items per business if empty
     for key, branding in pairs(Config.BusinessBranding or {}) do
         local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { branding.business }) or 0
@@ -1389,5 +1388,37 @@ QBCore.Functions.CreateCallback('pf_mech:service:get', function(source, cb, plat
         { plate }
     ) or {}
     cb(rows)
+end)
+
+-- NOS install completion (consume full bottle)
+RegisterNetEvent('pf_mech:nos:finishInstall', function(success)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    if not success then return end
+    local removed = Player.Functions.RemoveItem('nos', 1)
+    if removed and QBCore.Shared.Items['nos'] then
+        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['nos'], 'remove', 1)
+    end
+end)
+
+-- Update NOS level (persist to state only; DB persistence optional)
+RegisterNetEvent('pf_mech:nos:updateLevel', function(netId, newLevel)
+    local veh = NetworkGetEntityFromNetworkId(netId or 0)
+    if veh == 0 or not DoesEntityExist(veh) then return end
+    local st = Entity(veh).state.nos
+    if st then
+        st.level = math.max(0, tonumber(newLevel) or 0)
+        Entity(veh).state:set('nos', st, true)
+    end
+end)
+
+
+
+-- Debug helper
+QBCore.Commands.Add('nosstate','Print vehicle NOS state',{},false,function(src)
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    TriggerClientEvent('pf_mech:nos:debugPrint', src)
 end)
 

@@ -955,3 +955,114 @@ end
 
 RegisterNetEvent('pf-mechanicjob:client:upgradeApplied', applyUpgrade)
 RegisterNetEvent('pf_mech:client:upgradeApplied', applyUpgrade)
+
+-- ================== NOS PURGE FX (bonnet offsets) ==================
+local PurgeFX = { active = {} }
+local PURGE_DICT, PURGE_NAME = 'core', 'ent_sht_steam'
+local SOUND_BANK, SOUND_NAME = 'CARWASH_SOUNDS', 'SPRAY'
+
+local function _vehHasNOS(veh)
+  local st = Entity(veh).state
+  local nos = st and st.nos
+  return nos and nos.has == true and (tonumber(nos.level) or 0) > 0
+end
+
+local function _loadPurgePtfx()
+  RequestNamedPtfxAsset(PURGE_DICT)
+  local untilAt = GetGameTimer() + 1500
+  while not HasNamedPtfxAssetLoaded(PURGE_DICT) do
+    if GetGameTimer() > untilAt then break end
+    Wait(0)
+  end
+  return HasNamedPtfxAssetLoaded(PURGE_DICT)
+end
+
+local function _bonnetLocalOffset(veh)
+  local idx = GetEntityBoneIndexByName(veh, 'bonnet')
+  if idx == -1 then
+    -- fallback: slight forward from vehicle origin
+    return vector3(0.0, 0.65, 0.0)
+  end
+  local world = GetWorldPositionOfEntityBone(veh, idx)
+  local off = GetOffsetFromEntityGivenWorldCoords(veh, world)
+  if #(off) < 0.001 then off = vec3(0.0, 0.65, 0.0) end
+  return off
+end
+
+local function _startPurge(veh, size)
+  if not DoesEntityExist(veh) or PurgeFX.active[veh] then return end
+  if not _loadPurgePtfx() then return end
+
+  -- Optional sfx
+  pcall(function()
+    RequestAmbientAudioBank(SOUND_BANK, 0)
+    PlaySoundFromEntity(-1, SOUND_NAME, veh, SOUND_BANK, false, 0)
+  end)
+
+  local base = _bonnetLocalOffset(veh)
+  local scale = tonumber(size) or ((Config.NOS and Config.NOS.purge and Config.NOS.purge.scale) or 1.0)
+
+  UseParticleFxAssetNextCall(PURGE_DICT)
+  local left = StartParticleFxLoopedOnEntity(PURGE_NAME, veh, base.x - 0.2, base.y + 0.5, base.z, 40.0, -20.0, 0.0, scale, false, false, false)
+
+  UseParticleFxAssetNextCall(PURGE_DICT)
+  local right = StartParticleFxLoopedOnEntity(PURGE_NAME, veh, base.x + 0.2, base.y + 0.5, base.z, 40.0,  20.0, 0.0, scale, false, false, false)
+
+  PurgeFX.active[veh] = { left = left, right = right }
+end
+
+local function _stopPurge(veh)
+  local h = PurgeFX.active[veh]; if not h then return end
+  pcall(function() if h.left  then StopParticleFxLooped(h.left,  true) end end)
+  pcall(function() if h.right then StopParticleFxLooped(h.right, true) end end)
+  PurgeFX.active[veh] = nil
+end
+
+-- Public events (optional external control)
+RegisterNetEvent('pf_mech:nos:purge:start', function(size)
+  local ped = PlayerPedId()
+  if not IsPedInAnyVehicle(ped, false) then return end
+  local veh = GetVehiclePedIsIn(ped, false)
+  if _vehHasNOS(veh) then _startPurge(veh, size) end
+end)
+RegisterNetEvent('pf_mech:nos:purge:stop', function()
+  local ped = PlayerPedId()
+  if not IsPedInAnyVehicle(ped, false) then return end
+  local veh = GetVehiclePedIsIn(ped, false)
+  _stopPurge(veh)
+end)
+
+-- Key watcher: hold purge key to spray
+CreateThread(function()
+  local keyPurge = (Config.NOS and Config.NOS.keys and Config.NOS.keys.purge) or 36 -- Left Ctrl
+  local wasHeld = false
+  while true do
+    Wait(0)
+    local ped = PlayerPedId()
+    if not IsPedInAnyVehicle(ped, false) then
+      wasHeld = false
+      goto cont
+    end
+    local veh = GetVehiclePedIsIn(ped, false)
+    if veh == 0 or GetPedInVehicleSeat(veh, -1) ~= ped then
+      if wasHeld then _stopPurge(veh) end
+      wasHeld = false
+      goto cont
+    end
+
+    local held = IsControlPressed(0, keyPurge)
+    if held and _vehHasNOS(veh) then
+      if not wasHeld then _startPurge(veh, nil) end
+      wasHeld = true
+    else
+      if wasHeld then _stopPurge(veh) end
+      wasHeld = false
+    end
+    ::cont::
+  end
+end)
+
+AddEventHandler('onResourceStop', function(res)
+  if res ~= GetCurrentResourceName() then return end
+  for veh,_ in pairs(PurgeFX.active) do _stopPurge(veh) end
+end)

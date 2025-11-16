@@ -579,7 +579,8 @@ local SingleCosmeticMap = {
 
 local function readableModName(modType)
     local labels = {
-        [0]='Spoiler',[1]='Front Bumper',[2]='Rear Bumper',[3]='Side Skirt',[4]='Exhaust',[5]='Roll Cage',
+        [0]='Spoiler',[1]='Front Bumper',[2]='Rear Bumper',[3]='Side Skirt',[4]='Exhaust',
+        [5]='Roll Cage',
         [6]='Grille',[7]='Hood',[8]='Fender',[9]='Right Fender',[10]='Roof',[14]='Horn',[23]='Wheels',
         [25]='Plate Holder',[28]='Dashboard',[29]='Dial Design',[30]='Door Speakers',[31]='Seats',
         [32]='Steering Wheel',[33]='Shifter',[34]='Plaque',[35]='Speakers',[36]='Trunk',
@@ -1196,3 +1197,10 @@ end, false)
 RegisterNetEvent('pf_mech:preview:openMenu', function()
     TriggerEvent('pf_mech:preview:open')
 end)
+
+-- Help command: show NOS controls quickly
+RegisterCommand('noshelp', function()
+  QBCore.Functions.Notify('NOS: Hold Left Shift to boost, Left Ctrl to purge', 'primary', 5000)
+  QBCore.Functions.Notify('Switch boost level with Arrow Up/Down', 'primary', 5000)
+  QBCore.Functions.Notify('Switch purge style with Page Up/Page Down', 'primary', 5000)
+end, false)

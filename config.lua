@@ -260,9 +260,6 @@ if not Config.WearTriggers then
         OilStarvationHealth = 25,      -- Oil % (health) below which starvation damage applies
         CoolantCritical     = 30,      -- Coolant % (health) below which engine takes damage
         HighRPM             = 0.92,    -- Normalized RPM considered abusive at (mph < 4)
-        BurnoutSpeed        = 15,      -- Max MPH while holding accel+brake to count as burnout
-        WaterDepthAlternator= 0.25,    -- Water depth where alternator & battery start taking damage
-        WaterDepthCritical  = 0.45,    -- Water depth where radiator/coolant heavy damage begins
         DriftLateralSpeed   = 4.5,     -- Lateral velocity threshold for drift wear
         JumpMinSpeed        = 25.0,    -- Min MPH while airborne to apply suspension/axle hit
         HardBrakeMPH        = 55.0,    -- MPH threshold for extra brake wear when braking
@@ -472,3 +469,75 @@ end
 Config.DPFItem = 'dpf'            -- Item name (must exist in shared/items.lua)
 Config.DPFRemoveTime = 6000       -- Progress time (ms) to remove DPF
 Config.DPFInstallTime = 6000      -- Progress time (ms) to install DPF back
+
+-- ============================================================================
+-- NOS SYSTEM
+-- ============================================================================
+Config.NOS = {
+  enabled = true,
+  items = { full = 'nos', empty = 'emptynos' },
+  capacity = 100,
+  requireTurbo = false,
+  defaultColor = '#55CCFF',
+  cooldownSec = 6,
+  cooldownMs = 10000,
+  purgeCooldownBonusSec = 2,
+  saveIntervalSec = 5,
+
+  keys = {
+    boost = 21,
+    purge = 36,
+    pageUp = 10,
+    pageDown = 11,
+    levelUp = 172,
+    levelDown = 173,
+  },
+
+  -- CHANGED: Much higher values (0.08-0.15 range for strong boost)
+  levels = {
+    [1] = { torqueMult = 1.02, powerMult = 1.3, drainPerSec = 12, damagePerSec = 0.15 },
+    [2] = { torqueMult = 1.04, powerMult = 1.5, drainPerSec = 18, damagePerSec = 0.3 },
+    [3] = { torqueMult = 1.06, powerMult = 1.7, drainPerSec = 25, damagePerSec = 0.5 },
+  },
+
+  purge = {
+    dict = 'core',
+    name = 'ent_amb_generator_smoke',
+    scale = 1.1,                           -- Purge particle scale
+    styles = { 'both', 'left', 'right', 'wide' },  -- Purge styles (unused)
+  },
+
+  sfx = {
+    purge = { bank = 'CARWASH_SOUNDS', name = 'SPRAY' },
+    cooldownEnd = { bank = 'dlc_xm_heists_fm_uc_sounds', name = 'download_complete' }
+  }
+}
+
+-- Helper for turbo requirement (robust; avoids false negatives)
+function Config.HasTurbo(veh)
+  if not veh or not DoesEntityExist(veh) then return false end
+  SetVehicleModKit(veh, 0)
+
+  -- 1) Native toggle check (most reliable when set by ToggleVehicleMod)
+  local ok, on = pcall(IsToggleModOn, veh, 18)
+  if ok and on then return true end
+
+  -- 2) qb-core vehicle properties (some scripts only set props)
+  if QBCore and QBCore.Functions and QBCore.Functions.GetVehicleProperties then
+    local props = QBCore.Functions.GetVehicleProperties(veh)
+    if props then
+      if props.modTurbo == true or props.modTurbo == 1 or props['mod_turbo'] == true then
+        return true
+      end
+    end
+  end
+
+  -- 3) Custom state flags (if your upgrade system sets an entity state flag)
+  local st = Entity(veh).state
+  if st and (st.turboInstalled == true or st.turbo == true) then
+    return true
+  end
+
+  -- 4) Fallback: if we can't confirm, do not block NOS to avoid false negatives
+  return true
+end

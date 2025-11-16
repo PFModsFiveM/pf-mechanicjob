@@ -330,3 +330,5 @@ QBCore.Functions.CreateUseableItem('diagnostics_tool', function(source)
     if not requireToolbox(Player, source) then return end
     TriggerClientEvent('pf-mechanicjob:client:openToolsMenu', source)  -- Opens inspection → diagnostics health menu
 end)
+
+-- REMOVE previous CreateUseableItem('nos') block (now handled in server/nos.lua)

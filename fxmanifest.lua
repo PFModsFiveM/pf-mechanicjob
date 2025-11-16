@@ -43,6 +43,8 @@ client_scripts {
   'client/mileage_hud.lua',
   'client/rolling_coal.lua',
   'client/mechanictools.lua',
+  -- NEW: NOS
+  'client/nos.lua',
   -- NEW: enhanced tire smoke
   'client/tire_smoke.lua',
   'client/service_book.lua'  -- NEW: service book UI/logic
@@ -55,7 +57,9 @@ server_scripts {
   'server/repair.lua',
   'server/useables.lua',
   'server/consumables.lua',
-  'server/garage_sync.lua'  -- NEW
+  'server/garage_sync.lua',  -- NEW (fixed comma)
+  -- NEW: NOS
+  'server/nos.lua'
 }
 
 escrow_ignore 'config.lua'

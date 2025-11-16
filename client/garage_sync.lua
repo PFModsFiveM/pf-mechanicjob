@@ -201,7 +201,13 @@ local function buildPayloadFromVehicle(veh)
         engineHealth = GetVehicleEngineHealth(veh),
         bodyHealth = GetVehicleBodyHealth(veh),
         tankHealth = GetVehiclePetrolTankHealth(veh),
-        dirtLevel = GetVehicleDirtLevel(veh)
+        dirtLevel = GetVehicleDirtLevel(veh),
+        -- NOS snapshot (optional)
+        nos = (function()
+            local s = Entity(veh).state.nos or nil
+            if not s then return nil end
+            return { has = s.has and true or false, level = math.floor(tonumber(s.level) or 0), color = s.color or nil }
+        end)()
     }
 end
 
@@ -290,6 +296,16 @@ exports('ApplyVehicleDiagnostics', function(veh, data)
     -- Apply standard vehicle properties
     if QBCore.Functions.SetVehicleProperties then
         QBCore.Functions.SetVehicleProperties(veh, data)
+    end
+    
+    if data and data.nos then
+        local st = Entity(veh).state
+        st:set('nos', {
+            has = data.nos.has and true or false,
+            level = tonumber(data.nos.level) or 0,
+            color = data.nos.color or (Config.NOS and Config.NOS.defaultColor) or '#55CCFF',
+            style = 1, cooldownAt = 0, levelSel = 1, lastBoostEnd = 0
+        }, true)
     end
 end)
 
