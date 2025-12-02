@@ -806,11 +806,11 @@ QBCore.Functions.CreateCallback('pf_mech:server:attemptRepair', function(source,
         elseif partKey == 'coolant' then
             damage.coolant = 0
         elseif partKey == 'engine_part' then
-            -- Engine part reduces engine damage (not body)
-            damage.engine = math.max(0, (damage.engine or 0) - (15 * count))
+            -- Engine part: fully restore (diagnostics calculated exact parts needed)
+            damage.engine_part = 0
         elseif partKey == 'body_part' then
-            -- Body part reduces body damage (not engine)
-            damage.body = math.max(0, (damage.body or 0) - (20 * count))
+            -- Body part: fully restore (diagnostics calculated exact parts needed)
+            damage.body_part = 0
         end
         
         -- Update the state

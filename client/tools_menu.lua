@@ -1,21 +1,27 @@
 local QBCore = exports['qb-core']:GetCoreObject()
-print('[TOOLS_MENU] Client script loaded')
+if Config and Config.Debug then print('[TOOLS_MENU] Client script loaded') end
 
--- SAFE FALLBACK: hasToolbox (always true if no implementation available)
+-- SAFE FALLBACK: hasToolbox (accept toolbox OR mechanic_tools)
 if type(hasToolbox) ~= 'function' then
     function hasToolbox(cb)
-        -- Try QBCore:HasItem if present; else allow
+        local function ok()
+            cb(true)
+        end
+        local function fail()
+            QBCore.Functions.Notify(L and L('need_toolbox') or 'You need a toolbox to do mechanic work', 'error')
+            cb(false)
+        end
         if QBCore and QBCore.Functions and QBCore.Functions.TriggerCallback then
-            QBCore.Functions.TriggerCallback('QBCore:HasItem', function(has)
-                if not has then
-                    QBCore.Functions.Notify(L and L('need_toolbox') or 'You need a toolbox to do mechanic work', 'error')
-                    cb(false)
-                else
-                    cb(true)
-                end
+            -- First check toolbox
+            QBCore.Functions.TriggerCallback('QBCore:HasItem', function(hasTool)
+                if hasTool then ok(); return end
+                -- Then check mechanic_tools as an alternative
+                QBCore.Functions.TriggerCallback('QBCore:HasItem', function(hasAlt)
+                    if hasAlt then ok() else fail() end
+                end, 'mechanic_tools')
             end, 'toolbox')
         else
-            cb(true)
+            ok()
         end
     end
 end
@@ -281,6 +287,29 @@ function doMechanicAction(label, ms)
     end
 end
 
+-- Local blocking progress with success/cancel return
+local function DoProgress(label, ms, dict, anim)
+    local ok, canceled = false, false
+    local ped = PlayerPedId()
+    local ad = dict or 'mini@repair'
+    local an = anim or 'fixing_a_ped'
+    RequestAnimDict(ad) while not HasAnimDictLoaded(ad) do Wait(0) end
+    if QBCore.Functions.Progressbar then
+        QBCore.Functions.Progressbar('pf_mech_repair_block', label or 'Working...', ms or 2000, false, true, {
+            disableMovement = true, disableCarMovement = true, disableMouse = false, disableCombat = true,
+        }, {
+            animDict = ad, anim = an, flags = 49,
+        }, {}, {}, function() ok = true end, function() canceled = true end)
+        while (not ok and not canceled) do Wait(10) end
+    else
+        TaskPlayAnim(ped, ad, an, 8.0, -8.0, ms or 2000, 49, 0, false, false, false)
+        Wait(ms or 2000)
+        ok = true
+    end
+    ClearPedTasks(ped)
+    return ok and not canceled
+end
+
 -- Helper: Calculate parts needed for repair
 local function partsNeededForRepair(partKey, healthPercent)
     local rule = (Config.PartRules or {})[partKey] or {}
@@ -334,6 +363,19 @@ local DiagnosticLabels = {
     brakefluid = "Brake Fluid",
     coolant = "Coolant"
 }
+
+-- Action duration helper (mirror of client/main.lua)
+local function timeForAction(action)
+    local t = {
+        engine = 5500,
+        body = 4500,
+        brakes = 3500,
+        tire = 3000,
+        oil = 2500,
+        battery = 2500,
+    }
+    return t[action] or 4000
+end
 
 -- NEW: Map part keys to item image filenames (kept, but we will prefer inventory images)
 local DiagnosticImages = {
@@ -539,6 +581,11 @@ RegisterNetEvent('pf_mechanicjob:client:openToolsMenu:direct', function()
     TriggerEvent('pf-mechanicjob:client:openToolsMenu:showMenu', veh)
 end)
 
+-- Allow server diagnostics useable to open our diagnostics directly
+RegisterNetEvent('pf-mechanicjob:client:openDiagnosticsDirect', function()
+    TriggerEvent('pf-mechanicjob:client:openToolsMenu')
+end)
+
 -- REPLACE: diagnostics menu build (fill placeholders)
 RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
     if not DoesEntityExist(veh) then QBCore.Functions.Notify('Vehicle not found', 'error'); return end
@@ -589,13 +636,21 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
     local function addPartEntry(p)
         local hp = math.min(100, math.max(0, tonumber(p.hp) or 0))
         local hpInt = math.floor(hp + 0.5)
-        local needed = hpInt >= 100 and 0 or partsNeededForRepairLocal(p.key, hpInt)
-        local txt = hpInt >= 100 and 'Perfect condition' or ('Needs: %d parts'):format(needed)
+        -- Allow repair even at 99% health (1 item top-off)
+        local needed = (hpInt >= 100) and 0 or math.max(1, partsNeededForRepairLocal(p.key, hpInt))
+        local txt
+        if hpInt >= 100 then
+            txt = 'Perfect condition'
+        elseif hpInt >= 99 then
+            txt = 'Top-off: 1 part'
+        else
+            txt = ('Needs: %d parts'):format(needed)
+        end
         menu[#menu+1] = {
             header = ('%s — %d%%'):format(p.label or p.key, hpInt),
             txt = txt,
             icon = getMenuIcon(p.key),
-            params = (hpInt < 100 and needed > 0) and {
+            params = (hpInt < 100) and {
                 event = 'pf-mechanicjob:client:openRepairSuggest',
                 args = { vehicle = veh, part = p.key, needed = needed }
             } or {}
@@ -644,7 +699,26 @@ RegisterNetEvent('pf-mechanicjob:client:openToolsMenu:showMenu', function(veh)
     OpenMenuGeneric(menu)
 end)
 
--- Wheel repair (burst or detached) - ADD TOOLBOX CHECK
+-- Suggest -> Confirm -> Perform repair (simplified: go straight to repair)
+RegisterNetEvent('pf-mechanicjob:client:openRepairSuggest', function(data)
+    if type(data) ~= 'table' then return end
+    local veh = data.vehicle or getRepairVehicle()
+    if not veh or veh == 0 or not DoesEntityExist(veh) then
+        QBCore.Functions.Notify('Vehicle not found','error')
+        return
+    end
+
+    -- Directly invoke the repair flow (you can replace with a confirm dialog if desired)
+    TriggerEvent('pf-mechanicjob:client:doRepairWithItems', {
+        vehicle = veh,
+        part = data.part,
+        needed = data.needed,
+        wheel = data.wheel,
+        progTime = data.progTime
+    })
+end)
+
+-- Wheel repair (burst or detached) - NO TOOLBOX REQUIRED (diagnostics flow)
 RegisterNetEvent('pf-mechanicjob:client:repairTireWheel', function(data)
     local veh   = data and data.vehicle or getRepairVehicle()
     local wheel = data and tonumber(data.wheel or -1) or -1
@@ -660,40 +734,71 @@ RegisterNetEvent('pf-mechanicjob:client:repairTireWheel', function(data)
         return
     end
 
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
+    -- Check for tire item and consume
+    QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
+        if not ok then QBCore.Functions.Notify('Missing tire','error'); return end
 
-        QBCore.Functions.TriggerCallback('pf-mechanicjob:server:consumeItem', function(ok)
-            if not ok then QBCore.Functions.Notify('Missing tire','error'); return end
+        if not DoProgress('Replacing tire...', 4000, 'mini@repair', 'fixing_a_ped') then
+            QBCore.Functions.Notify('Repair cancelled', 'error')
+            return
+        end
 
-            doMechanicAction('Replacing tire...', 4000)
+        SetVehicleTyreFixed(veh, wheel)
+        Wait(120)
 
-            SetVehicleTyreFixed(veh, wheel)
-            Wait(120)
+        if IsWheelDamaged(veh, wheel) then
+            Wait(150)
+        end
 
-            if IsWheelDamaged(veh, wheel) then
-                Wait(150)
-            end
+        if IsWheelDamaged(veh, wheel) then
+            Wait(200)
+        end
 
-            if IsWheelDamaged(veh, wheel) then
-                Wait(200)
-            end
+        if IsWheelDamaged(veh, wheel) then
+            return
+        end
 
-            if IsWheelDamaged(veh, wheel) then
-                return
-            end
+        local st = Entity(veh).state
+        local pd = st.partDamage or {}
+        pd.tires = pd.tires or {}
+        local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[wheel] or tostring(wheel)
+        pd.tires[key] = 0
+        st:set('partDamage', pd, true)
 
-            local st = Entity(veh).state
-            local pd = st.partDamage or {}
-            pd.tires = pd.tires or {}
-            local key = ({[0]='lf',[1]='rf',[2]='lr',[3]='rr',[4]='lm',[5]='rm'})[wheel] or tostring(wheel)
-            pd.tires[key] = 0
-            st:set('partDamage', pd, true)
+        QBCore.Functions.Notify('Tire replaced', 'success')
+    end, 'tire_new')
+end)
 
-            QBCore.Functions.Notify('Tire replaced', 'success')
-        end, 'tire_new')
-    end)
+-- Apply part effects from server broadcast (visual/health side)
+RegisterNetEvent('pf_mech:applyPart', function(payload)
+    if type(payload) ~= 'table' then return end
+    local netId = payload.net
+    local veh = NetworkGetEntityFromNetworkId(netId or 0)
+    if not veh or veh == 0 or not DoesEntityExist(veh) then return end
+
+    local qty = tonumber(payload.qty or 1) or 1
+    local actionType = tostring(payload.type or '')
+
+    if actionType == 'engine' then
+        -- Restore engine to full health (diagnostics calculated correct parts)
+        SetVehicleEngineHealth(veh, 1000.0)
+    elseif actionType == 'body' then
+        -- Restore body to full health (diagnostics calculated correct parts)
+        SetVehicleBodyHealth(veh, 1000.0)
+        -- Capture engine health to restore it after SetVehicleFixed
+        local engineHealth = GetVehicleEngineHealth(veh)
+        -- Use SetVehicleFixed to fully repair body deformation visually
+        SetVehicleFixed(veh)
+        -- Restore original engine health (SetVehicleFixed repairs engine too)
+        SetVehicleEngineHealth(veh, engineHealth)
+    elseif actionType == 'brakes' then
+        -- Ask damage system to reset brake cache so handling restores
+        TriggerEvent('pf_mech:client:resetBrakeCache', netId)
+    end
+
+    if payload.toast then
+        QBCore.Functions.Notify(payload.toast, 'success')
+    end
 end)
 
 -- New handler: perform progress then call server to consume items & apply repair
@@ -708,30 +813,27 @@ RegisterNetEvent('pf-mechanicjob:client:doRepairWithItems', function(data)
         QBCore.Functions.Notify('Vehicle not found', 'error'); return
     end
 
-    -- NEW: Check for toolbox
-    hasToolbox(function(has)
-        if not has then return end
+    -- No toolbox required for diagnostics-based repairs; proceed directly
 
-        -- NEW: Get item label from DiagnosticLabels or QBCore.Shared.Items
-        local partLabel = DiagnosticLabels[part] or part:gsub('_', ' ')
-        if QBCore.Shared.Items[part] and QBCore.Shared.Items[part].label then
-            partLabel = QBCore.Shared.Items[part].label
+    -- Resolve item label from DiagnosticLabels or QBCore.Shared.Items
+    local partLabel = DiagnosticLabels[part] or part:gsub('_', ' ')
+    if QBCore.Shared.Items[part] and QBCore.Shared.Items[part].label then
+        partLabel = QBCore.Shared.Items[part].label
+    end
+
+    -- Run progress; if cancelled, abort
+    if not DoProgress('Repairing '..partLabel..'...', progTime, 'mini@repair', 'fixing_a_ped') then
+        QBCore.Functions.Notify('Repair cancelled', 'error'); return
+    end
+
+    -- Ask server to remove items and perform repair
+    QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
+        if success then
+            QBCore.Functions.Notify(msg or 'Repair successful', 'success')
+        else
+            QBCore.Functions.Notify(msg or 'Missing required parts or failed', 'error')
         end
-
-        -- run progress; if cancelled, abort
-        if not DoProgress('Repairing '..partLabel..'...', progTime, 'mini@repair', 'fixing_a_ped') then
-            QBCore.Functions.Notify('Repair cancelled', 'error'); return
-        end
-
-        -- ask server to remove items and perform repair
-        QBCore.Functions.TriggerCallback('pf_mech:server:attemptRepair', function(success, msg)
-            if success then
-                QBCore.Functions.Notify(msg or 'Repair successful', 'success')
-            else
-                QBCore.Functions.Notify(msg or 'Missing required parts or failed', 'error')
-            end
-        end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, wheel)
-    end)
+    end, NetworkGetNetworkIdFromEntity(vehicle), part, needed, wheel)
 end)
 
 -- Generic one-shot VFX relay (entity or coord based)

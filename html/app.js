@@ -408,43 +408,42 @@ window.addEventListener('message',(e)=>{
       console.log('[MechanicOS]', payload?.text || '');
       break;
 
-    // NEW: Handle mileage updates
-    if (data.action === 'updateMileage') {
-        const hud = document.getElementById('mileage-hud');
-        const valueElement = document.querySelector('.mileage-value');
-        const unitElement = document.querySelector('.mileage-unit');
+    case 'updateMileage': {
+      const hud = document.getElementById('mileage-hud');
+      const valueElement = document.querySelector('.mileage-value');
+      const unitElement = document.querySelector('.mileage-unit');
+      
+      if (!hud || !valueElement || !unitElement) {
+        console.error('[MILEAGE] Elements not found:', { hud, valueElement, unitElement });
+        return;
+      }
+      
+      if (payload && payload.visible) {
+        hud.classList.add('visible');
         
-        if (!hud || !valueElement || !unitElement) {
-            console.error('[MILEAGE] Elements not found:', { hud, valueElement, unitElement });
-            return;
+        const mileage = Math.floor(payload.mileage || 0);
+        const formatted = mileage.toLocaleString('en-US');
+        
+        if (Math.abs(mileage - (window.lastMileage || 0)) >= 1) {
+          valueElement.classList.add('pulse');
+          setTimeout(() => { valueElement.classList.remove('pulse'); }, 300);
+          window.lastMileage = mileage;
         }
         
-        if (data.visible) {
-            hud.classList.add('visible');
-            
-            const mileage = Math.floor(data.mileage || 0);
-            const formatted = mileage.toLocaleString('en-US');
-            
-            if (Math.abs(mileage - lastMileage) >= 1) {
-                valueElement.classList.add('pulse');
-                setTimeout(() => {
-                    valueElement.classList.remove('pulse');
-                }, 300);
-                lastMileage = mileage;
-            }
-            
-            valueElement.textContent = formatted;
-            unitElement.textContent = data.unit || 'MI';
-            
-            console.log('[MILEAGE] Updated:', formatted, data.unit);
-        } else {
-            hud.classList.remove('visible');
-        }
-    } else if (data.action === 'hideMileage') {
-        const hud = document.getElementById('mileage-hud');
-        if (hud) {
-            hud.classList.remove('visible');
-        }
+        valueElement.textContent = formatted;
+        unitElement.textContent = payload.unit || 'MI';
+        
+        console.log('[MILEAGE] Updated:', formatted, payload.unit);
+      } else {
+        hud.classList.remove('visible');
+      }
+      break;
     }
-  });
+
+    case 'hideMileage': {
+      const hud = document.getElementById('mileage-hud');
+      if (hud) hud.classList.remove('visible');
+      break;
+    }
+  }
 });

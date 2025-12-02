@@ -9,6 +9,9 @@ local currentNetId = nil
 
 local QBCore = exports['qb-core']:GetCoreObject()
 
+-- Local debug toggle to reduce spam even when Config.Debug=true
+local RC_DEBUG = (Config.RollingCoal and Config.RollingCoal.debug) or false
+
 local EXHAUST_BONES = {
   "exhaust","exhaust_2","exhaust_3","exhaust_4","exhaust_5","exhaust_6","exhaust_7","exhaust_8",
   "exhaust_9","exhaust_10","exhaust_11","exhaust_12","exhaust_13","exhaust_14","exhaust_15","exhaust_16"
@@ -37,7 +40,7 @@ RegisterNetEvent('pf_mech:syncCoalDelete', function(plate, enabled)
   plate = tostring(plate or ''):gsub('%s+', ''):upper()
   if plate == '' then return end
   CoalVehicles[plate] = enabled
-  if Config.Debug then
+  if Config.Debug and RC_DEBUG then
     print(string.format('[COAL SYNC] %s -> %s', plate, tostring(enabled)))
   end
 end)
@@ -56,7 +59,7 @@ CreateThread(function()
         if plate and CoalVehicles[plate] == nil then
           QBCore.Functions.TriggerCallback('pf_mech:getCoalState', function(enabled)
             CoalVehicles[plate] = enabled
-            if Config.Debug then
+            if Config.Debug and RC_DEBUG then
               print(string.format('[COAL] Loaded state for %s: %s', plate, tostring(enabled)))
             end
           end, plate)
@@ -144,7 +147,7 @@ local function startParticlesFor(netId)
   
   ActiveCoal[netId] = { particles = particles }
   
-  if Config.Debug then
+  if Config.Debug and RC_DEBUG then
     print(string.format('[COAL] Started %d particles for netId: %s', #particles, tostring(netId)))
   end
 end

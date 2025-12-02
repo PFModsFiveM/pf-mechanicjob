@@ -164,14 +164,12 @@ Locale:Load('en', {
     ['preview_exit_desc'] = 'Exit without saving',
     ['preview_close_revert'] = 'Close & Revert',
     ['paint_type'] = 'Paint Type',
-})
-
--- Add under a suitable section:
-Locale:Add({
-  ['dpf_installed'] = 'DPF installed',
-  ['dpf_removed']   = 'DPF removed',
-  ['dpf_remove']    = 'Remove DPF',
-  ['dpf_install']   = 'Install DPF',
-  ['dpf_enable']    = 'DPF removed: rolling coal enabled',
-  ['dpf_disable']   = 'DPF installed: rolling coal disabled'
+    
+    -- DPF / Rolling Coal
+    ['dpf_installed'] = 'DPF installed',
+    ['dpf_removed'] = 'DPF removed',
+    ['dpf_remove'] = 'Remove DPF',
+    ['dpf_install'] = 'Install DPF',
+    ['dpf_enable'] = 'DPF removed: rolling coal enabled',
+    ['dpf_disable'] = 'DPF installed: rolling coal disabled',
 })
