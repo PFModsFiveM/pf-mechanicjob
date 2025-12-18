@@ -1,497 +1,1424 @@
--- pf-mechanicjob • SERVER
+-- server/main.lua
+-- PF Mechanic Job – Server
+-- Framework: QBCore + oxmysql
+
 local QBCore = exports['qb-core']:GetCoreObject()
+local CoalState = CoalState or {} -- [plate] = true if DPF removed
 
-local JOB     = Config.JobName or 'mechanic'
-local SOCIETY = Config.Society or 'mechanic'
+QBCore.Functions.CreateCallback('pf_mech:getCoalState', function(src, cb, plate)
+  plate = tostring(plate or ''):gsub('%s+',''):upper()
+  cb(CoalState[plate] == true)
+end)
 
-local function enc(t) return json.encode(t or {}) end
-local function J(s) if not s or s == '' then return {} end return json.decode(s) end
-
--- =========================
--- Rank helpers
--- =========================
-local RANKS = Config.RankXP or {
-  { rank=1, need=0,    payMult=1.00 },
-  { rank=2, need=200,  payMult=1.10 },
-  { rank=3, need=600,  payMult=1.20 },
-  { rank=4, need=1200, payMult=1.35 },
-}
-local function rankForXP(xp)
-  local r, mult = 1, 1.0
-  for _, v in ipairs(RANKS) do if xp >= v.need then r=v.rank; mult=v.payMult end end
-  return r, mult
-end
-local function thresholds() local t={}; for _,v in ipairs(RANKS) do t[#t+1]=v.need end; return t end
-local function minRankForParts(parts)
-  local req = 1
-  for _, p in ipairs(parts or {}) do
-    if p.id == 'paint_kit' then req = math.max(req, 2) end
-    if p.id == 'susp_arm'  then req = math.max(req, 3) end
-    if p.id == 'tire_new'  then req = math.max(req, 4) end
-  end
-  return req
-end
-
-local function getSrcByCitizen(cid)
-  for _, P in pairs(QBCore.Functions.GetQBPlayers()) do
-    if P.PlayerData.citizenid == cid then return P.PlayerData.source end
-  end
-  return nil
-end
-
--- =========================
--- Usables
--- =========================
-for _, name in ipairs(Config.TabletItems or {'mech_tablet'}) do
-  QBCore.Functions.CreateUseableItem(name, function(src)
-    local P = QBCore.Functions.GetPlayer(src)
-    if not P or P.PlayerData.job.name ~= JOB then
-      return TriggerClientEvent('QBCore:Notify', src, 'You must be a mechanic to use this', 'error')
+RegisterNetEvent('pf_mech:dpf:remove', function(plate)
+    local src = source
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
+    if plate == '' then return end
+    if CoalState[plate] == true then
+        TriggerClientEvent('pf_mech:dpf:result', src, 'remove', false, 'DPF already removed', plate, true)
+        return
     end
-    TriggerClientEvent('pf_mech:openTablet', src)
-  end)
-end
-
-for partName, _ in pairs(Config.PartRules or {}) do
-  if QBCore.Shared.Items[partName] then
-    QBCore.Functions.CreateUseableItem(partName, function(src)
-      local P = QBCore.Functions.GetPlayer(src)
-      if not P or P.PlayerData.job.name ~= JOB then
-        return TriggerClientEvent('QBCore:Notify', src, 'Mechanics only', 'error')
-      end
-      TriggerClientEvent('pf_mech:tryUsePart', src, partName)
-    end)
-  end
-end
-if QBCore.Shared.Items['oilfilter'] and not QBCore.Shared.Items['oil_filter'] then
-  QBCore.Functions.CreateUseableItem('oilfilter', function(src)
-    local P = QBCore.Functions.GetPlayer(src)
-    if not P or P.PlayerData.job.name ~= JOB then
-      return TriggerClientEvent('QBCore:Notify', src, 'Mechanics only', 'error')
+    local ply = QBCore.Functions.GetPlayer(src); if not ply then return end
+    CoalState[plate] = true
+    ply.Functions.AddItem(Config.DPFItem, 1)
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[Config.DPFItem], 'add')
+    TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, true)
+    TriggerClientEvent('pf_mech:dpf:result', src, 'remove', true, 'DPF removed - rolling coal enabled', plate, true)
+    
+    -- NEW: Debug
+    if Config.Debug then
+        print(string.format('[DPF SERVER] Removed DPF for %s, broadcasting to all clients', plate))
     end
-    TriggerClientEvent('pf_mech:tryUsePart', src, 'oilfilter')
-  end)
-end
-
--- =========================
--- Dashboard / Data
--- =========================
-QBCore.Functions.CreateCallback('pf_mech:getDashboard', function(src, cb)
-  local P = QBCore.Functions.GetPlayer(src); if not P then return cb(false) end
-  local cid = P.PlayerData.citizenid
-
-  local prof = MySQL.single.await('SELECT xp,rank FROM pf_mech_profiles WHERE citizenid=?', { cid })
-  if not prof then
-    MySQL.insert.await('INSERT INTO pf_mech_profiles (citizenid,xp,rank,jobs_done,total_earnings) VALUES (?,?,?,?,?)', { cid, 0, 1, 0, 0 })
-    prof = { xp = 0, rank = 1 }
-  end
-  local myRank = rankForXP(prof.xp or 0)
-
-  local stock = MySQL.query.await('SELECT part_id, qty FROM pf_parts_stock WHERE society=?', { SOCIETY }) or {}
-
-  -- purge ancient stuck jobs assigned to this character
-  MySQL.update.await([[ UPDATE pf_work_orders
-                         SET status='cancelled'
-                         WHERE assigned_to=? AND status IN ('accepted','in_progress')
-                           AND TIMESTAMPDIFF(HOUR, updated_at, NOW()) > 12 ]], { cid })
-
-  local jobsNew = MySQL.query.await([[
-    SELECT id,type,plate,veh_model,deadline_at,min_rank,status
-    FROM pf_work_orders
-    WHERE status='new' AND (min_rank IS NULL OR min_rank <= ?)
-    ORDER BY created_at ASC
-    LIMIT 20
-  ]], { myRank }) or {}
-
-  local jobsActive = MySQL.query.await([[
-    SELECT id,type,plate,status
-    FROM pf_work_orders
-    WHERE status IN ('accepted','in_progress','awaiting_parts')
-      AND assigned_to=?
-    ORDER BY updated_at DESC
-    LIMIT 20
-  ]], { cid }) or {}
-
-  cb({
-    profile = { xp = prof.xp or 0, rank = myRank },
-    stock = stock,
-    jobsNew = jobsNew,
-    jobsActive = jobsActive,
-    thresholds = thresholds()
-  })
 end)
 
-QBCore.Functions.CreateCallback('pf_mech:getPlayerNames', function(_, cb, idList)
-  local map = {}
-  for _, sid in ipairs(idList or {}) do
-    local P = QBCore.Functions.GetPlayer(tonumber(sid))
-    if P then
-      local n = P.PlayerData.charinfo
-      map[tostring(sid)] = (n and (n.firstname .. ' ' .. n.lastname)) or ('ID '..sid)
-    end
-  end
-  cb(map)
-end)
-
-QBCore.Functions.CreateCallback('pf_mech:pos:getCatalog', function(_, cb)
-  cb(Config.POSCatalog or {})
-end)
-
-QBCore.Functions.CreateCallback('pf_mech:job:getInfo', function(src, cb, workId)
-  local row = MySQL.single.await('SELECT * FROM pf_work_orders WHERE id=?', { workId })
-  if not row then return cb(false) end
-  row.required_parts = J(row.required_parts)
-  row.installed_parts = J(row.installed_parts)
-  cb(row)
-end)
-
--- =========================
--- POS / Receipts
--- =========================
-local Invoices = {}
-local function newInvoiceId() return ('INV-%d-%04d'):format(os.time() % 100000, math.random(0,9999)) end
-local function chooseReceiptItem()
-  for _, name in ipairs(Config.ReceiptItems or {'receipt'}) do
-    if QBCore.Shared.Items[name] then return name end
-  end
-  return nil
-end
-
-RegisterNetEvent('pf_mech:pos:chargePlayer', function(targetSrc, cart)
+RegisterNetEvent('pf_mech:dpf:install', function(plate)
   local src = source
-  local seller = QBCore.Functions.GetPlayer(src); if not seller or seller.PlayerData.job.name ~= JOB then return end
-  local items = cart.items or {}
-  local subtotal = 0.0
-  for _, it in ipairs(items) do subtotal = subtotal + ((tonumber(it.price) or 0) * (tonumber(it.qty) or 1)) end
-  local tax = tonumber(cart.tax or (subtotal * 0.085)) or 0
-  local total = tonumber(cart.total or (subtotal + tax)) or 0
-
-  local biz = MySQL.single.await('SELECT name FROM pf_business WHERE business=?', { SOCIETY })
-  local invoiceId = newInvoiceId()
-  local buyerSrc = (targetSrc and targetSrc ~= 0) and targetSrc or src
-
-  Invoices[invoiceId] = {
-    id = invoiceId,
-    businessName = (biz and biz.name) or 'Mechanic Shop',
-    sellerSrc = src, buyerSrc = buyerSrc,
-    items = items, subtotal = subtotal, tax = tax, total = total
-  }
-  TriggerClientEvent('pf_mech:pos:openPayment', buyerSrc, {
-    id = invoiceId,
-    businessName = Invoices[invoiceId].businessName,
-    sellerName = (seller.PlayerData.charinfo.firstname .. ' ' .. seller.PlayerData.charinfo.lastname),
-    items = items, subtotal = subtotal, tax = tax, total = total
-  })
-end)
-
-RegisterNetEvent('pf_mech:pos:customerPay', function(invId, method, accept)
-  local src = source
-  local inv = Invoices[invId]; if not inv then return end
-  if src ~= inv.buyerSrc then return end
-  if not accept then Invoices[invId] = nil; return TriggerClientEvent('QBCore:Notify', src, 'Payment declined', 'error') end
-
-  local buyer = QBCore.Functions.GetPlayer(src); if not buyer then return end
-  local amt = math.max(0, math.floor(inv.total + 0.5))
-  local ok = false
-  if method == 'cash' then ok = buyer.Functions.RemoveMoney('cash', amt, 'mechanic-pos') else ok = buyer.Functions.RemoveMoney('bank', amt, 'mechanic-pos') end
-  if not ok then return TriggerClientEvent('QBCore:Notify', src, 'Insufficient funds', 'error') end
-
-  local rItem = chooseReceiptItem()
-  if rItem then
-    buyer.Functions.AddItem(rItem, 1, false, { amount=amt, invoice=inv.id, business=inv.businessName, when=os.time() })
-    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[rItem], 'add')
+  plate = tostring(plate or ''):gsub('%s+',''):upper()
+  if plate == '' then return end
+  if CoalState[plate] ~= true then
+    TriggerClientEvent('pf_mech:dpf:result', src, 'install', false, 'DPF already installed', plate, false)
+    return
   end
-
-  TriggerClientEvent('QBCore:Notify', src, 'Payment successful', 'success')
-  TriggerClientEvent('pf_mech:pos:paid', inv.sellerSrc, (src == inv.sellerSrc))
-  TriggerClientEvent('pf_mech:pos:paid', src, true)
-  Invoices[invId] = nil
+  local ply = QBCore.Functions.GetPlayer(src); if not ply then return end
+  if not ply.Functions.GetItemByName('dpf') then
+    TriggerClientEvent('pf_mech:dpf:result', src, 'install', false, 'Missing DPF item', plate, true)
+    return
+  end
+  ply.Functions.RemoveItem('dpf', 1)
+  TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['dpf'], 'remove')
+  CoalState[plate] = false
+  TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, false)
+  TriggerClientEvent('pf_mech:dpf:result', src, 'install', true, 'DPF installed - rolling coal disabled', plate, false)
 end)
 
--- =========================
--- NPC jobs (feed + expiry)
--- =========================
-local NPCOn, NPCThread = false, nil
+RegisterNetEvent('pf_mech:coal:syncStart', function(netId)
+  if not Config.RollingCoal.enabled then return end
+  TriggerClientEvent('pf_mech:coal:startParticles', -1, netId)
+end)
+RegisterNetEvent('pf_mech:coal:syncStop', function(netId)
+  TriggerClientEvent('pf_mech:coal:stopParticles', -1, netId)
+end)
 
-RegisterNetEvent('pf_mech:npc:toggle', function(enable)
-  local src = source
-  local P = QBCore.Functions.GetPlayer(src); if not P or P.PlayerData.job.name ~= JOB then return end
-  NPCOn = enable and true or false
-  TriggerClientEvent('QBCore:Notify', src, NPCOn and 'NPC jobs enabled' or 'NPC jobs disabled', 'primary')
+local resource = GetCurrentResourceName()
 
-  local function spawnOnce()
-    local kind = ({'basic','paint','susp','tires'})[math.random(4)]
-    local parts, typ, paintKey
-    if kind == 'basic' then
-      local arr = { { {id='engine_oil',qty=1} }, { {id='oil_filter',qty=1} }, { {id='brake_pads',qty=1} } }
-      parts = arr[math.random(#arr)]; typ = 'engine'
-    elseif kind == 'paint' then
-      parts = { {id='paint_kit',qty=1} }; typ='cosmetic'; paintKey='red'
-    elseif kind == 'susp' then
-      parts = { {id='susp_arm',qty=2} }; typ='suspension'
-    else
-      parts = { {id='tire_new',qty=math.random(1,2)} }; typ='service'
+---@type table<string, boolean>
+local BossGrades = Config.BossGrades or {}
+
+-- ============================================================================
+-- Helpers
+-- ============================================================================
+
+local function json_ok(s)
+    if not s or s == '' then return nil end
+    local ok, t = pcall(function() return json.decode(s) end)
+    if ok then return t end
+    return nil
+end
+
+local function getNameFromPlayersTable(citizenid)
+    local row = MySQL.single.await('SELECT charinfo FROM players WHERE citizenid = ? LIMIT 1', { citizenid })
+    if not row then return ('%s'):format(citizenid:sub(1, 6)) end
+    local ci = json_ok(row.charinfo) or {}
+    local first, last = (ci.firstname or ''), (ci.lastname or '')
+    local name = (first ~= '' or last ~= '') and (first .. ' ' .. last) or (ci.firstname or citizenid:sub(1, 6))
+    return name
+end
+
+-- REPLACE isBoss to respect any allowed mechanic job
+local function isBoss(Player)
+    if not Player or not Player.PlayerData or not Player.PlayerData.job then return false end
+    local jobData = Player.PlayerData.job
+    local jobName = jobData.name
+    if not Config.IsMechanicJob(jobName) then return false end
+    if jobData.isboss then return true end
+    local grade = tostring(jobData.grade and jobData.grade.level or jobData.grade or 0)
+    return BossGrades[grade] == true
+end
+
+-- ADD: dynamic business key lookup (used throughout)
+local function getPlayerBusiness(Player)
+    if not Player or not Player.PlayerData or not Player.PlayerData.job then return nil end
+    local jobName = Player.PlayerData.job.name
+    if not Config.IsMechanicJob(jobName) then return nil end
+    return Config.GetBusinessKey(jobName)
+end
+
+local function ensureBusiness()
+    local bkey = (Config.DEFAULT_BRANDING and Config.DEFAULT_BRANDING.business) or (Config.Job or 'mechanic')
+    local row = MySQL.single.await('SELECT business FROM pf_business WHERE business = ? LIMIT 1', { bkey })
+    if not row then
+        local d = Config.DEFAULT_BRANDING or {}
+        MySQL.insert.await(
+            'INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, open, tax) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            { bkey, d.name or 'Mechanic Shop', d.primary_color or '#0BA378', d.secondary_color or '#0B2E44', d.logo or '', d.open or 1, d.tax or 0.05 }
+        )
     end
+end
 
-    local plate = ('NPC%03d'):format(math.random(0,999))
-    local model = (Config.NPCModels or {'sultan'})[math.random(#(Config.NPCModels or {'sultan'}))]
-    local sec = math.random(30,60)
-    local minRank = minRankForParts(parts)
+-- Call this once on resource start (or before first read of pf_business)
+local function ensureBusinessRow(business)
+    local row = MySQL.single.await('SELECT * FROM pf_business WHERE business = ?', { business })
+    if not row then
+        MySQL.insert.await(
+            'INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, tax, open) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            { business, DEFAULT_BRANDING.name, DEFAULT_BRANDING.primary_color, DEFAULT_BRANDING.secondary_color, DEFAULT_BRANDING.logo, DEFAULT_BRANDING.tax, DEFAULT_BRANDING.open }
+        )
+    end
+end
 
-    local id = MySQL.insert.await([[
-      INSERT INTO pf_work_orders
-        (type,source,requester_name,plate,veh_model,notes,required_parts,paint_req,deadline_at,status,min_rank)
-      VALUES (?,?,?,?,?,?,?,?, DATE_ADD(NOW(), INTERVAL ? SECOND), 'new', ?)
-    ]], { typ, 'npc', 'Local', plate, model, 'Auto-generated', enc(parts), paintKey, sec, minRank })
+-- REMOVE / COMMENT OUT old single-row seeding handler
+--[[  (deprecated single business seed)
+AddEventHandler('onResourceStart', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    ensureBusinessRow('mechanic')
+end)
+]]
 
-    -- Only notify players who can actually take this job
-    for _, ply in pairs(QBCore.Functions.GetQBPlayers()) do
-      if ply.PlayerData.job and ply.PlayerData.job.name == JOB then
-        local prof = MySQL.single.await('SELECT xp FROM pf_mech_profiles WHERE citizenid=?', { ply.PlayerData.citizenid })
-        local r = rankForXP((prof and prof.xp) or 0)
-        if r >= (minRank or 1) then
-          TriggerClientEvent('pf_mech:client:newJob', ply.PlayerData.source, { id=id, type=typ, plate=plate })
+-- Transform flat pf_pos_items to { [category] = { {id,label,price}, ... } }
+local function buildCatalog(rows)
+    local out = {}
+    for _, r in ipairs(rows or {}) do
+        local cat = r.category or 'General'
+        out[cat] = out[cat] or {}
+        out[cat][#out[cat] + 1] = { id = r.item_id, label = r.label, price = tonumber(r.price) or 0 }
+    end
+    return out
+end
+
+-- ============================================================================
+-- Boot / Seed
+-- ============================================================================
+
+AddEventHandler('onResourceStart', function(res)
+    if res ~= resource then return end
+    ensureAllBusinesses()                 -- now seeds all configured shops
+    -- Seed POS items per business if empty
+    for key, branding in pairs(Config.BusinessBranding or {}) do
+        local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { branding.business }) or 0
+        if cnt == 0 and Config.CatalogSeed then
+            for _, it in ipairs(Config.CatalogSeed) do
+                MySQL.insert.await(
+                    'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
+                    { branding.business, it.id, it.category, it.label, it.price }
+                )
+            end
         end
-        TriggerClientEvent('pf_mech:jobsUpdate', ply.PlayerData.source)
-      end
     end
-  end
-
-  if NPCOn and not NPCThread then
-    spawnOnce()
-    NPCThread = true
-    CreateThread(function()
-      while NPCOn do
-        Wait(math.random(30,60) * 1000)
-        if not NPCOn then break end
-        spawnOnce()
-      end
-      NPCThread = nil
-    end)
-  end
 end)
 
-CreateThread(function()
-  while true do
-    Wait(2000)
-    local changed = MySQL.update.await("UPDATE pf_work_orders SET status='expired' WHERE status='new' AND deadline_at IS NOT NULL AND deadline_at < NOW()")
-    if changed and changed > 0 then TriggerClientEvent('pf_mech:jobsUpdate', -1) end
-  end
-end)
+-- NEW: ensure all businesses (moved up so it exists before onResourceStart handler)
+local function ensureAllBusinesses()
+    for _, branding in pairs(Config.BusinessBranding or {}) do
+        local row = MySQL.single.await(
+            'SELECT business FROM pf_business WHERE business = ? LIMIT 1',
+            { branding.business }
+        )
+        if not row then
+            MySQL.insert.await(
+                'INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, open, tax) VALUES (?, ?, ?, ?, ?, ?, ?)',
 
--- =========================
--- Job flow
--- =========================
-RegisterNetEvent('pf_mech:acceptJob', function(id)
-  local src = source
-  local P = QBCore.Functions.GetPlayer(src); if not P or P.PlayerData.job.name ~= JOB then return end
-  local cid = P.PlayerData.citizenid
+                {
+                    branding.business,
+                    branding.name,
+                    branding.primary_color,
+                    branding.secondary_color,
+                    branding.logo or '',
+                    branding.open or 1,
+                    branding.tax or 0.05
+                }
+            )
+        end
+    end
+end
 
-  local wo = MySQL.single.await('SELECT * FROM pf_work_orders WHERE id=?', { id })
-  if not wo or wo.status ~= 'new' then return end
+-- ============================================================================
+-- Management: GET payload
+-- ============================================================================
 
-  local xp = MySQL.scalar.await('SELECT xp FROM pf_mech_profiles WHERE citizenid=?', { cid }) or 0
-  local myRank = select(1, rankForXP(xp))
-  if myRank < (wo.min_rank or 1) then
-    return TriggerClientEvent('QBCore:Notify', src, 'Your rank is too low for this job', 'error')
-  end
+RegisterNetEvent('pf_mech:mgmt:get', function()
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    
+    local businessKey = getPlayerBusiness(Player)
+    if not businessKey then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Not a mechanic.' })
+        return
+    end
 
-  local ok = MySQL.update.await("UPDATE pf_work_orders SET status='accepted', assigned_to=? WHERE id=? AND status='new'", { cid, id })
-  if not ok or ok < 1 then return end
-  MySQL.update.await("UPDATE pf_work_orders SET status='in_progress', updated_at=NOW() WHERE id=?", { id })
+    -- Branding
+    local brand = MySQL.single.await(
+        'SELECT name, primary_color, secondary_color, logo, open, tax FROM pf_business WHERE business = ? LIMIT 1',
+        { businessKey }
+    ) or {}
 
-  local sp = Config.NPCSpawns and Config.NPCSpawns[1]
-  if sp then
-    local tires = 0; for _, p in ipairs(J(wo.required_parts) or {}) do if p.id == 'tire_new' then tires = tires + (p.qty or 1) end end
-    TriggerClientEvent('pf_mech:client:spawnNPCVeh', src, {
-      id=id, model=wo.veh_model, plate=wo.plate,
-      coords={ x=sp.coords.x, y=sp.coords.y, z=sp.coords.z, h=sp.h },
-      name=string.upper(wo.type) .. ' • ' .. wo.plate,
-      popTires=tires
+    -- POS Catalog
+    local posRows = MySQL.query.await(
+        'SELECT item_id, category, label, price FROM pf_pos_items WHERE business = ? ORDER BY category, label',
+        { businessKey }
+    ) or {}
+    local catalog = buildCatalog(posRows)
+
+    -- Employees list (pf_employees is the roster; online + onduty pulled from framework)
+    local empRows = MySQL.query.await(
+        'SELECT citizenid, grade, salary, avatar FROM pf_employees WHERE business = ? ORDER BY grade DESC',
+        { businessKey }
+    ) or {}
+
+    local onlinePlayers = QBCore.Functions.GetQBPlayers()
+    local onlineIndex = {}
+    for _, p in pairs(onlinePlayers) do
+        local pd = p.PlayerData
+        if pd and pd.citizenid then onlineIndex[pd.citizenid] = p end
+    end
+
+    local employees, onDuty, total = {}, 0, 0
+    for _, e in ipairs(empRows) do
+        total = total + 1
+        local name = getNameFromPlayersTable(e.citizenid)
+        local p = onlineIndex[e.citizenid]
+        local online = p ~= nil
+        local duty = online and p.PlayerData.job and (p.PlayerData.job.onduty == true) or false
+        if duty then onDuty = onDuty + 1 end
+
+        employees[#employees + 1] = {
+            cid = e.citizenid,
+            name = name,
+            grade = tonumber(e.grade) or 0,
+            salary = tonumber(e.salary) or 0,
+            avatar = e.avatar or '',
+            online = online,
+            duty = duty
+        }
+    end
+
+    -- Metrics
+    local today = MySQL.single.await(
+        [[SELECT COALESCE(SUM(amount),0) AS amt, COUNT(*) AS cnt
+          FROM pf_sales WHERE business = ? AND DATE(created_at) = CURDATE()]],
+        { businessKey }
+    ) or { amt = 0, cnt = 0 }
+
+    local month = MySQL.single.await(
+        [[SELECT COALESCE(SUM(amount),0) AS amt
+          FROM pf_sales WHERE business = ? AND DATE_FORMAT(created_at, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')]],
+        { businessKey }
+    ) or { amt = 0 }
+
+    local weekBars = MySQL.query.await(
+        [[SELECT DATE(created_at) AS day, COALESCE(SUM(amount),0) AS total
+            FROM pf_sales
+            WHERE business = ? AND created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+            GROUP BY DATE(created_at)
+            ORDER BY day ASC]],
+        { businessKey }
+    ) or {}
+
+    local canEdit = isBoss(Player)
+
+    TriggerClientEvent('pf_mech:mgmt:get:resp', src, {
+        canEdit   = canEdit,
+        branding  = {
+            name = brand.name or Config.DEFAULT_BRANDING.name,
+            primary = brand.primary_color or Config.DEFAULT_BRANDING.primary_color,
+            secondary = brand.secondary_color or Config.DEFAULT_BRANDING.secondary_color,
+            logo = brand.logo or '',
+            open = tonumber(brand.open or 1),
+            tax = tonumber(brand.tax or Config.DEFAULT_BRANDING.tax or 0.05)
+        },
+        catalog   = catalog,
+        employees = employees,
+        headcount = { on = onDuty, total = total },
+        npcOn     = false, -- client overrides with personal toggle
+        metrics   = {
+            todayTotal  = tonumber(today.amt) or 0,
+            todayOrders = tonumber(today.cnt) or 0,
+            monthTotal  = tonumber(month.amt) or 0,
+            weeklyBars  = weekBars
+        }
     })
-  end
-
-  TriggerClientEvent('pf_mech:jobsUpdate', src)
 end)
 
-RegisterNetEvent('pf_mech:startJob', function(id)
-  local src = source
-  local P = QBCore.Functions.GetPlayer(src); if not P or P.PlayerData.job.name ~= JOB then return end
-  MySQL.update.await("UPDATE pf_work_orders SET status='in_progress', updated_at=NOW() WHERE id=? AND assigned_to=?", { id, P.PlayerData.citizenid })
-  TriggerClientEvent('pf_mech:jobsUpdate', src)
-end)
 
--- Cancel active job -> set status=cancelled, deduct XP, cleanup client vehicle/blip
-RegisterNetEvent('pf_mech:cancelJob', function(jobId)
-  local src = source
-  local P = QBCore.Functions.GetPlayer(src)
-  if not P then return end
-  local cid = P.PlayerData.citizenid
-  local id = tonumber(jobId)
-  if not id then return end
+-- ── Safe defaults (in case Config.DEFAULT_BRANDING is missing) ────────────────
+local DEFAULT_BRANDING = (Config and Config.DEFAULT_BRANDING) or {
+    name = 'Mechanic Shop',
+    primary_color   = '#0BA378',
+    secondary_color = '#0B2E44',
+    logo = '',
+    tax  = 5,   -- percent
+    open = 1
+}
 
-  -- Only the assigned mechanic can cancel, and only if it's in an active state
-  local wo = MySQL.single.await([[
-      SELECT id, assigned_to, status
-      FROM pf_work_orders
-      WHERE id = ?
-  ]], { id })
-  if not wo then return end
-  if wo.assigned_to ~= cid then return end
+-- ============================================================================
+-- Management: Save Branding
+-- ============================================================================
 
-  -- Only cancel if the job is actually active
-  local st = tostring(wo.status or '')
-  if st ~= 'accepted' and st ~= 'in_progress' and st ~= 'awaiting_parts' then return end
-
-  -- Hard-cancel: clear assignee + any server-side vehicle linkage
-  MySQL.update.await([[
-      UPDATE pf_work_orders
-      SET status='cancelled',
-          assigned_to=NULL,
-          veh_netid=NULL,
-          updated_at=NOW()
-      WHERE id=? AND assigned_to=?
-        AND status IN ('accepted','in_progress','awaiting_parts')
-  ]], { id, cid })
-
-  -- Deduct XP
-  local penalty = (Config.JobCancel and tonumber(Config.JobCancel.xpPenalty)) or 25
-  local newxp = PF_AddXP(cid, -penalty)
-
-  -- Tell the client to remove vehicle/blip for this job id
-  TriggerClientEvent('pf_mech:client:jobCanceled', src, id)
-
-  -- Notify & refresh the jobs list so the card disappears immediately
-  TriggerClientEvent('QBCore:Notify', src, ('Job cancelled (-%d XP)'):format(penalty), 'primary')
-  TriggerClientEvent('pf_mech:jobsUpdate', src)
-  TriggerClientEvent('pf_mech:jobsUpdate', -1)
-end)
-
-local function payForJob(wo, quality)
-  local q = quality or 80
-  local base = (Config.JobTypes[wo.type] or { basePay = 600 }).basePay
-  local xp = MySQL.scalar.await('SELECT xp FROM pf_mech_profiles WHERE citizenid=?', { wo.assigned_to }) or 0
-  local _, mult = rankForXP(xp)
-  local pay = math.floor(base * mult * (0.5 + q / 100))
-
-  local targetSrc = getSrcByCitizen(wo.assigned_to)
-  if targetSrc then
-    local P = QBCore.Functions.GetPlayer(targetSrc)
-    if P then
-      P.Functions.AddMoney('bank', pay, 'mechanic-workorder')
-      TriggerClientEvent('QBCore:Notify', targetSrc, ('Job complete. Paid $%d'):format(pay), 'success')
-      TriggerClientEvent('pf_mech:client:clearJobBlip', targetSrc, wo.id)
-    end
-  end
-
-  MySQL.update.await('UPDATE pf_mech_profiles SET xp = xp + ?, jobs_done = jobs_done + 1, total_earnings = total_earnings + ? WHERE citizenid=?',
-    { math.floor(20 + q / 2), math.max(0, pay), wo.assigned_to })
-end
-
-RegisterNetEvent('pf_mech:finishJob', function(id, q)
-  local src = source
-  local P = QBCore.Functions.GetPlayer(src); if not P or P.PlayerData.job.name ~= JOB then return end
-  local wo = MySQL.single.await('SELECT * FROM pf_work_orders WHERE id=?', { id })
-  if not wo or wo.status ~= 'in_progress' or wo.assigned_to ~= P.PlayerData.citizenid then
-    return TriggerClientEvent('QBCore:Notify', src, 'Wrong job state', 'error')
-  end
-
-  local need = {}; for _, p in ipairs(J(wo.required_parts) or {}) do need[p.id] = (need[p.id] or 0) + (p.qty or 1) end
-  local have = J(wo.installed_parts)
-  for idp, qn in pairs(need) do if (have[idp] or 0) < qn then return TriggerClientEvent('QBCore:Notify', src, 'Missing required parts', 'error') end end
-
-  MySQL.update.await("UPDATE pf_work_orders SET status='complete', quality=?, updated_at=NOW() WHERE id=? AND status='in_progress'", { q or 80, id })
-  payForJob(wo, q or 80)
-  TriggerClientEvent('pf_mech:jobsUpdate', src)
-end)
-
-RegisterNetEvent('pf_mech:npcVehSpawned', function(d)
-  local src = source
-  local P = QBCore.Functions.GetPlayer(src); if not P then return end
-  MySQL.update.await([[ UPDATE pf_work_orders
-                         SET veh_netid=?, veh_x=?, veh_y=?, veh_z=?, veh_h=?, updated_at=NOW()
-                       WHERE id=? AND assigned_to=? ]],
-    { d.netId, d.x, d.y, d.z, d.h, d.id, P.PlayerData.citizenid })
-end)
-
--- =========================
--- Parts usage
--- =========================
-RegisterNetEvent('pf_mech:orderParts', function(_items)
-  TriggerClientEvent('pf_mech:stockUpdate', source)
-end)
-
-RegisterNetEvent('pf_mech:usePart', function(partName, vehNet, jobId, px, py, pz, meta)
-  local src = source
-  local P = QBCore.Functions.GetPlayer(src)
-  if not P or P.PlayerData.job.name ~= JOB then return end
-
-  if partName == 'oilfilter' then partName = 'oil_filter' end
-  local rule = (Config.PartRules or {})[partName]
-  if not rule then return end
-
-  local apply = { net = vehNet, action = rule.action }
-  local toast
-
-  if rule.npcOnly then
-    if not jobId then return TriggerClientEvent('QBCore:Notify', src, 'This part is for work orders only', 'error') end
-    local row = MySQL.single.await('SELECT * FROM pf_work_orders WHERE id=?', { jobId })
-    if not row or row.status ~= 'in_progress' or row.assigned_to ~= P.PlayerData.citizenid then
-      return TriggerClientEvent('QBCore:Notify', src, 'Not your job or wrong state', 'error')
+RegisterNetEvent('pf_mech:mgmt:saveBranding', function(data)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not isBoss(Player) then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Not allowed.' })
+        return
     end
 
-    local req = J(row.required_parts); local need = 0
-    for _,p in ipairs(req or {}) do if p.id == partName then need = need + (p.qty or 1) end end
-    if need <= 0 then return TriggerClientEvent('QBCore:Notify', src, 'This job does not require that part', 'error') end
+    local businessKey = getPlayerBusiness(Player)
+    if not businessKey then return end
 
-    local inst = J(row.installed_parts); local have = tonumber(inst[partName] or 0)
-    if have >= need then return TriggerClientEvent('QBCore:Notify', src, 'Already installed', 'error') end
+    local branding = Config.BusinessBranding[businessKey] or {}
+    local name  = (data and data.name) or branding.name
+    local prim  = (data and data.primary_color) or branding.primary_color
+    local sec   = (data and data.secondary_color) or branding.secondary_color
+    local logo  = (data and data.logo) or ''
+    local open  = (data and data.open) and 1 or 0
+    local tax   = tonumber(data and data.tax) or (branding.tax or 0.05)
 
-    if not P.Functions.RemoveItem(partName, 1) then
-      return TriggerClientEvent('QBCore:Notify', src, 'You do not have that part', 'error')
+    MySQL.execute.await(
+        [[INSERT INTO pf_business (business, name, primary_color, secondary_color, logo, open, tax)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            name = VALUES(name), primary_color = VALUES(primary_color), secondary_color = VALUES(secondary_color),
+            logo = VALUES(logo), open = VALUES(open), tax = VALUES(tax)]],
+        { businessKey, name, prim, sec, logo, open, tax }
+    )
+
+    TriggerClientEvent('pf_mech:toast', src, { text = 'Branding saved.' })
+    -- Re-send payload so UI updates
+    TriggerClientEvent('pf_mech:mgmt:get', src)
+end)
+
+-- ============================================================================
+-- Management: Update Catalog Price
+-- ============================================================================
+
+RegisterNetEvent('pf_mech:mgmt:updatePrice', function(payload)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not isBoss(Player) then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Not allowed.' })
+        return
     end
 
-    inst[partName] = have + 1
-    MySQL.update.await('UPDATE pf_work_orders SET installed_parts=?, updated_at=NOW() WHERE id=?', { enc(inst), row.id })
-
-    if partName == 'paint_kit' then apply.color = row.paint_req end
-    toast = ('Installed %s (%d/%d)'):format(partName:gsub('_',' '), inst[partName], need)
-  else
-    if not P.Functions.RemoveItem(partName, 1) then
-      return TriggerClientEvent('QBCore:Notify', src, 'You do not have that part', 'error')
+    local businessKey = getPlayerBusiness(Player)
+    if not businessKey then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Invalid job.' })
+        return
     end
-    if rule.action == 'setMod' and meta then
-      apply.action = 'setMod'
-      apply.modType  = tonumber(meta.modType)
-      apply.modIndex = tonumber(meta.modIndex)
-      toast = 'Modification applied'
+
+    local itemId = payload and payload.item_id
+    local label  = payload and payload.label or ''
+    local price  = tonumber(payload and payload.price) or 0
+    if not itemId or itemId == '' then return end
+
+    local row = MySQL.single.await(
+        'SELECT item_id FROM pf_pos_items WHERE business = ? AND item_id = ? LIMIT 1',
+        { businessKey, itemId }
+    )
+
+    if row then
+        MySQL.update.await(
+            'UPDATE pf_pos_items SET label = ?, price = ? WHERE business = ? AND item_id = ?',
+            { label, price, businessKey, itemId }
+        )
     else
-      toast = ('Used %s'):format(partName:gsub('_',' '))
+        MySQL.insert.await(
+            'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
+            { businessKey, itemId, 'General', label, price }
+        )
     end
-  end
 
-  apply.toast = toast
-  TriggerClientEvent('pf_mech:applyPart', src, apply)
+    TriggerClientEvent('pf_mech:toast', src, { text = ('Price updated: %s'):format(label) })
+    TriggerClientEvent('pf_mech:mgmt:get', src)
 end)
 
--- =========================
--- Dev helper to clear stuck jobs
--- =========================
-QBCore.Commands.Add('mechclear', 'Clear your assigned mechanic jobs (dev)', {}, false, function(src)
-  local P = QBCore.Functions.GetPlayer(src); if not P then return end
-  local cid = P.PlayerData.citizenid
-  local list = MySQL.query.await('SELECT id FROM pf_work_orders WHERE assigned_to=? AND status IN ("accepted","in_progress")', { cid }) or {}
-  MySQL.update.await('UPDATE pf_work_orders SET status="cancelled", updated_at=NOW() WHERE assigned_to=? AND status IN ("accepted","in_progress")', { cid })
-  for _, row in ipairs(list) do TriggerClientEvent('pf_mech:client:clearJobBlip', src, row.id) end
-  TriggerClientEvent('pf_mech:jobsUpdate', src)
-  TriggerClientEvent('QBCore:Notify', src, 'Cleared your active jobs', 'success')
-end, 'admin')
+-- ============================================================================
+-- Management: Update Employee (grade/salary/avatar)
+-- ============================================================================
 
--- PF ADD: XP helper (deducts or adds; clamps at 0)
-function PF_AddXP(cid, delta)
-  delta = tonumber(delta or 0) or 0
-  local cur = MySQL.scalar.await('SELECT xp FROM pf_mech_profiles WHERE citizenid=?', { cid }) or 0
-  local new = math.max(0, cur + delta)
-  MySQL.update.await('UPDATE pf_mech_profiles SET xp=? WHERE citizenid=?', { new, cid })
-  return new
+RegisterNetEvent('pf_mech:mgmt:updateEmployee', function(p)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not isBoss(Player) then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Not allowed.' })
+        return
+    end
+    if not p or not p.cid then return end
+
+    local businessKey = getPlayerBusiness(Player)
+    if not businessKey then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Invalid job.' })
+        return
+    end
+
+    local grade  = tonumber(p.grade) or 0
+    local salary = tonumber(p.salary) or 0
+    local avatar = p.avatar or ''
+
+    MySQL.execute.await(
+        [[INSERT INTO pf_employees (citizenid, business, grade, salary, avatar)
+            VALUES (?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE grade = VALUES(grade), salary = VALUES(salary), avatar = VALUES(avatar)]],
+        { p.cid, businessKey, grade, salary, avatar }
+    )
+
+    local Target = QBCore.Functions.GetPlayerByCitizenId(p.cid)
+    if Target and Target.PlayerData and Target.PlayerData.job
+        and Config.IsMechanicJob(Target.PlayerData.job.name) then
+        Target.Functions.SetJob(Target.PlayerData.job.name, grade)
+    end
+
+    TriggerClientEvent('pf_mech:toast', src, { text = 'Employee saved.' })
+    TriggerClientEvent('pf_mech:mgmt:get', src)
+end)
+
+-- ============================================================================
+-- POS: request charge / pay
+-- ============================================================================
+
+-- Ask a target to pay (shows NUI payment modal on their client)
+RegisterNetEvent('pos:requestCharge', function(data)
+    local src = source
+    local targetSrc = tonumber(data and data.targetSrc) or 0
+    if targetSrc <= 0 then targetSrc = src end
+
+    local items = (data and data.cart and data.cart.items) or {}
+    local subtotal = 0
+    for _, it in ipairs(items) do
+        subtotal = subtotal + ((tonumber(it.price) or 0) * (tonumber(it.qty) or 1))
+    end
+
+    local seller = QBCore.Functions.GetPlayer(src)
+    local businessKey = getPlayerBusiness(seller) or (Config.DEFAULT_BRANDING.business)
+    local brand = MySQL.single.await(
+        'SELECT tax FROM pf_business WHERE business = ? LIMIT 1',
+        { businessKey }
+    ) or {}
+    local taxRate = tonumber(brand.tax or Config.DEFAULT_BRANDING.tax or 0.05)
+    local tax = math.floor((subtotal * taxRate) + 0.5)
+    local total = subtotal + tax
+
+    local invoice = {
+        id = ('%s-%d-%d'):format(businessKey, src, os.time()),
+        business = businessKey,
+        from = src,
+        to = targetSrc,
+        items = items,
+        subtotal = subtotal,
+        tax = tax,
+        total = total
+    }
+    TriggerClientEvent('pos:payPrompt', targetSrc, invoice)
+end)
+
+-- Customer accepts/declines & payment method
+RegisterNetEvent('pos:customerPay', function(data)
+    local src = source
+    local invoiceId = data and data.invoiceId
+    local accept = data and data.accept
+    local method = data and data.method or 'cash'
+    if not invoiceId then return end
+
+    local inv = data -- the client sends back the same structure
+    if not inv or not accept then
+        TriggerClientEvent('pf_mech:toast', src, { text = 'Payment declined.' })
+        return
+    end
+
+    local payer = QBCore.Functions.GetPlayer(src)
+    local seller = QBCore.Functions.GetPlayer(inv.from)
+    if not payer then return end
+
+    if method == 'cash' then
+        if not payer.Functions.RemoveMoney('cash', inv.total, 'mechanic-pos') then
+            TriggerClientEvent('pf_mech:toast', src, { text = 'Not enough cash.' })
+            return
+        end
+        if seller then seller.Functions.AddMoney('cash', inv.total, 'mechanic-pos') end
+    else
+        if not payer.Functions.RemoveMoney('bank', inv.total, 'mechanic-pos') then
+            TriggerClientEvent('pf_mech:toast', src, { text = 'Card declined.' })
+            return
+        end
+        if seller then seller.Functions.AddMoney('bank', inv.total, 'mechanic-pos') end
+    end
+
+    local businessKey = inv.business or (seller and getPlayerBusiness(seller)) or Config.DEFAULT_BRANDING.business
+    MySQL.insert.await(
+        'INSERT INTO pf_sales (business, src, target, amount, tax, total, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())',
+        { businessKey, inv.from or 0, inv.to or src, inv.subtotal or 0, inv.tax or 0, inv.total or 0 }
+    )
+
+    TriggerClientEvent('pf_mech:toast', src, { text = 'Paid ' .. tostring(inv.total) })
+    if inv.from then TriggerClientEvent('pf_mech:toast', inv.from, { text = 'Payment received.' }) end
+    TriggerClientEvent('pay:close', src)
+    if inv.from then TriggerClientEvent('pay:close', inv.from) end
+end)
+
+-- ============================================================================
+-- Employee personal earnings (for the “Earnings” app)
+-- ============================================================================
+
+RegisterNetEvent('pf_mech:earnings:get', function()
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    local cid = Player.PlayerData.citizenid
+    -- NPC/local jobs & player jobs should be written to pf_job_history by your job logic.
+    -- We aggregate by created_at date.
+    local rows = MySQL.query.await(
+        [[SELECT DATE(created_at) AS day,
+                 COALESCE(SUM(CASE WHEN type='npc' THEN amount ELSE 0 END),0)  AS npc_total,
+                 COALESCE(SUM(CASE WHEN type='player' THEN amount ELSE 0 END),0) AS cust_total
+            FROM pf_job_history
+           WHERE citizenid = ?
+           GROUP BY DATE(created_at)
+           ORDER BY day ASC
+           LIMIT 14]],
+        { cid }
+    ) or {}
+
+    local today = 0
+    local week  = 0
+    local month = 0
+    local bars  = {}
+
+    for _, r in ipairs(rows) do
+        local dayTotal = (tonumber(r.npc_total) or 0) + (tonumber(r.cust_total) or 0)
+        bars[#bars+1] = { day = r.day, total = dayTotal }
+        -- naive sums (you may want proper date ranges)
+        today = dayTotal -- last row assumed latest day
+        week  = week + dayTotal
+        month = month + dayTotal
+    end
+
+    TriggerClientEvent('pf_mech:earnings:resp', src, {
+        today = today or 0,
+        week  = week  or 0,
+        month = month or 0,
+        bars  = bars
+    })
+end)
+
+local function serverClock()
+    local h = tonumber(os.date('%H'))
+    local m = tonumber(os.date('%M'))
+    return h, m
 end
+
+local npcEnabled = {}  -- [src] = true/false
+
+RegisterNetEvent('pf_mech:npc:toggle', function(on)
+    local src = source
+    npcEnabled[src] = on and true or false
+    print(('[pf-mech] %d npcEnabled=%s'):format(src, tostring(npcEnabled[src])))
+
+    if npcEnabled[src] then
+        -- kick a tick for this player
+        startNpcFeedFor(src)
+    else
+        stopNpcFeedFor(src)
+    end
+
+    -- (optional) echo state to their UI
+    TriggerClientEvent('pf_mech:npc:updateJobs', src, {
+        jobsNew = {}, jobsActive = {}, profile = { xp = 0, rank = 1 }, thresholds = { 0, 200, 450, 800 }
+    })
+end)
+
+RegisterNetEvent('pf_mech:npc:refresh', function()
+    local src = source
+    -- send current jobs/state
+    TriggerClientEvent('pf_mech:npc:updateJobs', src, {
+        jobsNew = {}, jobsActive = {}, profile = { xp = 0, rank = 1 }, thresholds = { 0, 200, 450, 800 }
+    })
+end)
+
+-- Stubbed helpers (replace with your real job logic)
+function startNpcFeedFor(src)
+    -- TODO: create/assign jobs and push with pf_mech:npc:updateJobs
+end
+function stopNpcFeedFor(src)
+    -- TODO: clear timers / pending jobs
+end
+
+AddEventHandler('playerDropped', function(_, src)
+    npcEnabled[src] = nil
+    stopNpcFeedFor(src)
+end)
+
+-- Register performance parts
+local performanceParts = {
+    "engine1", "engine2", "engine3", "engine4", "engine5",
+    "brakes1", "brakes2", "brakes3",
+    "transmission1", "transmission2", "transmission3",
+    "transmission4",      -- ADDED
+    "suspension1", "suspension2", "suspension3", "suspension4",
+    "suspension5",        -- ADDED
+    "armor1", "armor2", "armor3", "armor4", "armor5",
+    "car_armor",          -- ADDED (sets max armor)
+    "turbo",
+    "drifttires",         -- ADDED (toggle drift tires)
+    "bprooftires",        -- ADDED (bulletproof tires)
+    "headlights"          -- ADDED (xenon lights)
+}
+
+-- ADD: toolbox helper (missing before)
+local function playerHasToolbox(src)
+    local ply = QBCore.Functions.GetPlayer(src)
+    if not ply then return false end
+    return ply.Functions.GetItemByName('toolbox') ~= nil
+end
+
+for _, item in ipairs(performanceParts) do
+    QBCore.Functions.CreateUseableItem(item, function(source)
+        local Player = QBCore.Functions.GetPlayer(source)
+        if not Player then return end
+        if not Config.IsMechanicJob(Player.PlayerData.job.name) then
+            TriggerClientEvent('QBCore:Notify', source, 'You are not a mechanic!', 'error')
+            return
+        end
+        if not playerHasToolbox(source) then
+            TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
+            return
+        end
+        if Config.Debug then
+            print('[PERF PART USE SERVER] '..item..' by '..source)
+        end
+        TriggerClientEvent('pf-mechanicjob:client:usePerformanceItem', source, item)
+    end)
+end
+
+-- NEW: fast lookup set
+local PerformancePartsSet = {}
+for _, v in ipairs(performanceParts) do PerformancePartsSet[v] = true end
+
+-- NEW: return removed upgrade item (called from client downgrade)
+RegisterNetEvent('pf-mechanicjob:server:returnUpgradeItem', function(itemName)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    itemName = tostring(itemName or '')
+    if itemName == '' then return end
+    if not PerformancePartsSet[itemName] then
+        if Config.Debug then
+            print('[MECH RETURN] Invalid item requested: '..itemName)
+        end
+        return
+    end
+    -- Give back one item
+    Player.Functions.AddItem(itemName, 1)
+    if QBCore.Shared.Items[itemName] then
+        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], 'add', 1)
+    end
+    TriggerClientEvent('QBCore:Notify', src, ('Returned %s'):format(itemName), 'success')
+    if Config.Debug then
+        print(('[MECH RETURN] Gave %s back to %d'):format(itemName, src))
+    end
+end)
+
+RegisterNetEvent('pf_mech:usePart', function(itemName, vehNetId, jobId, px, py, pz, extra)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    -- Check if player has the item
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item then 
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required part', 'error')
+        return 
+    end
+
+    -- Remove item after successful installation
+    if Player.Functions.RemoveItem(itemName, 1) then
+        -- Apply the part effect
+        TriggerClientEvent('pf_mech:applyPart', -1, {
+            net = vehNetId,
+            action = Config.PartRules[itemName].action,
+            toast = 'Successfully installed ' .. itemName:gsub('_', ' ')
+        })
+
+        -- Add experience/job data here if needed
+    else
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to install part', 'error')
+    end
+end)
+
+-- map partKey -> item name used in inventory (ADD MISSING ENTRIES)
+local PartToItem = {
+  engine_part = 'engine_part',
+  body_part   = 'body_part',
+  sparkplugs  = 'sparkplugs',
+  carbattery  = 'carbattery',
+  alternator  = 'alternator',
+  engine_oil  = 'engine_oil',
+  oil_filter  = 'oil_filter',
+  susp_arm    = 'susp_arm',
+  axleparts   = 'axleparts',
+  tire_new    = 'tire_new',
+  brakes      = 'brake_pads',       -- FIX: brakes uses brake_pads item
+  fuel_injector = 'fuel_injector',  -- NEW
+  powersteeringpump = 'powersteeringpump', -- NEW
+  radiator    = 'radiator',         -- NEW
+  power_steering_fluid = 'power_steering_fluid', -- NEW
+  transmissionfluid = 'transmissionfluid', -- NEW
+  brakefluid  = 'brakefluid',       -- NEW
+  coolant     = 'coolant',          -- NEW
+}
+
+-- map partKey -> data used when applying repair to clients (ADD MISSING ENTRIES)
+local PartApplyInfo = {
+  engine_part = { action = 'repair', type = 'engine' },
+  body_part   = { action = 'repair', type = 'body' },
+  sparkplugs  = { action = 'repair', type = 'sparkplugs' },
+  carbattery  = { action = 'repair', type = 'battery' },
+  alternator  = { action = 'repair', type = 'alternator' },
+  engine_oil  = { action = 'repair', type = 'oil' },
+  oil_filter  = { action = 'repair', type = 'oil_filter' },
+  susp_arm    = { action = 'repair', type = 'suspension' },
+  axleparts   = { action = 'repair', type = 'axle' },
+  tire_new    = { action = 'tire',   type = 'tire' },
+  brakes      = { action = 'repair', type = 'brakes' },       -- NEW
+  fuel_injector = { action = 'repair', type = 'fuel_injector' }, -- NEW
+  powersteeringpump = { action = 'repair', type = 'powersteeringpump' }, -- NEW
+  radiator    = { action = 'repair', type = 'radiator' },     -- NEW
+  power_steering_fluid = { action = 'repair', type = 'power_steering_fluid' }, -- NEW
+  transmissionfluid = { action = 'repair', type = 'transmissionfluid' }, -- NEW
+  brakefluid  = { action = 'repair', type = 'brakefluid' },   -- NEW
+  coolant     = { action = 'repair', type = 'coolant' },      -- NEW
+}
+
+-- callback used by client to attempt a repair (consumes items and broadcasts apply)
+QBCore.Functions.CreateCallback('pf_mech:server:attemptRepair', function(source, cb, vehNetId, partKey, needed, wheel)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then cb(false, 'Player not found'); return end
+
+    local itemName = PartToItem[partKey] or partKey
+    local count = tonumber(needed) or 1
+
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item or (item.amount or 0) < count then
+        cb(false, 'You do not have enough items')
+        return
+    end
+
+    local removed = Player.Functions.RemoveItem(itemName, count)
+    if not removed then
+        cb(false, 'Failed to remove items')
+        return
+    end
+
+    -- NEW: Get the vehicle entity and update partDamage directly on server
+    local veh = NetworkGetEntityFromNetworkId(vehNetId)
+    if veh and DoesEntityExist(veh) then
+        local state = Entity(veh).state
+        local damage = state.partDamage or {}
+        
+        -- Repair the specific part
+        if partKey == 'alternator' then
+            damage.alternator = 0
+        elseif partKey == 'engine_oil' or partKey == 'oil' then
+            damage.oil = 0
+        elseif partKey == 'oil_filter' then
+            damage.oil_filter = 0
+        elseif partKey == 'carbattery' then
+            damage.carbattery = 0
+        elseif partKey == 'sparkplugs' then
+            damage.sparkplugs = math.max(0, (damage.sparkplugs or 0) - (20 * count))
+        elseif partKey == 'brakes' or partKey == 'brake_pads' then
+            damage.brakes = math.max(0, (damage.brakes or 0) - (25 * count))
+        elseif partKey == 'susp_arm' then
+            damage.suspension = math.max(0, (damage.suspension or 0) - (25 * count))
+        elseif partKey == 'axleparts' then
+            damage.axle = math.max(0, (damage.axle or 0) - (25 * count))
+        elseif partKey == 'fuel_injector' then
+            damage.fuel_injector = math.max(0, (damage.fuel_injector or 0) - (25 * count))
+        elseif partKey == 'powersteeringpump' then
+            damage.powersteeringpump = 0
+        elseif partKey == 'radiator' then
+            damage.radiator = 0
+        elseif partKey == 'power_steering_fluid' then
+            damage.power_steering_fluid = 0
+        elseif partKey == 'transmissionfluid' then
+            damage.transmissionfluid = 0
+        elseif partKey == 'brakefluid' then
+            damage.brakefluid = 0
+        elseif partKey == 'coolant' then
+            damage.coolant = 0
+        elseif partKey == 'engine_part' then
+            -- Engine part: fully restore (diagnostics calculated exact parts needed)
+            damage.engine_part = 0
+        elseif partKey == 'body_part' then
+            -- Body part: fully restore (diagnostics calculated exact parts needed)
+            damage.body_part = 0
+        end
+        
+        -- Update the state
+        state:set('partDamage', damage, true)
+    end
+
+    local info = PartApplyInfo[partKey] or { action = 'repair', type = partKey }
+    local toast = ('%s x%d used'):format(item.label or itemName, count)
+    local payload = { net = vehNetId, action = info.action, type = info.type, toast = toast, wheel = wheel, qty = count }
+
+    TriggerClientEvent('pf_mech:applyPart', -1, payload)
+
+    cb(true, 'Repair completed')
+end)
+
+-- Register useable items
+local function RegisterItems()
+    local cosmeticItems = {
+        'spoiler','bumper','vehicle_bumper','skirts','exhaust','rollcage','hood','roof',
+        'externals','internals','livery','customplate','seat','horn','rims'
+    }
+    
+    local paintItems = {
+        'paint_kit',
+        'tint_supplies'
+    }
+    
+    local wheelItems = {
+        'rims'
+    }
+    
+    -- CHANGED: require toolbox for all
+    for _, item in ipairs(cosmeticItems) do
+        QBCore.Functions.CreateUseableItem(item, function(source)
+            if not playerHasToolbox(source) then
+                TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
+                return
+            end
+            TriggerClientEvent('pf-mechanicjob:client:openItemModMenu', source, item)
+        end)
+    end
+    
+    for _, item in ipairs(paintItems) do
+        QBCore.Functions.CreateUseableItem(item, function(source)
+            if not playerHasToolbox(source) then
+                TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
+                return
+            end
+            if item == 'paint_kit' then
+                TriggerClientEvent('pf-mechanicjob:client:usePaint', source, item)
+            else
+                if Config.Debug then print('[COSMETIC USE SERVER] tint_supplies by '..source) end
+                TriggerClientEvent('pf-mechanicjob:client:usePart', source, item)
+            end
+        end)
+    end
+    
+    for _, item in ipairs(wheelItems) do
+        QBCore.Functions.CreateUseableItem(item, function(source, itemInfo)
+            if not playerHasToolbox(source) then
+                TriggerClientEvent('QBCore:Notify', source, 'You need a toolbox to do mechanic work', 'error')
+                return
+            end
+            TriggerClientEvent('pf-mechanicjob:client:useWheels', source, item)
+        end)
+    end
+end
+
+AddEventHandler('onResourceStart', function(resourceName)
+    if resourceName == GetCurrentResourceName() then
+        RegisterItems()
+    end
+end)
+
+RegisterNetEvent('pf_mech:server:removeMod', function(item)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    Player.Functions.RemoveItem(item, 1)
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[item], "remove")
+end)
+
+-- Server-side: apply cosmetic mod (called from client after progress completes)
+RegisterNetEvent('pf_mech:server:applyMod', function(data)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not data then return end
+
+    local itemName = data.item
+    local modType  = data.modType
+    local modIndex = data.modIndex
+    local vehicleNet = data.vehicle
+
+    -- verify item exists in inventory
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: ' .. tostring(itemName), 'error')
+        return
+    end
+
+    -- remove 1 item
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to remove item: ' .. tostring(itemName), 'error')
+        return
+    end
+
+    -- Broadcast to all clients to apply the mod (keeps visuals in sync)
+    TriggerClientEvent('pf_mech:client:modApplied', -1, {
+        vehicle = vehicleNet,
+        modType = modType,
+        modIndex = modIndex
+    })
+
+    -- Show item box to user who used the item
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+end)
+
+-- Server: apply paint/tint (consumes 1 paint_kit or tint_supplies)
+RegisterNetEvent('pf_mech:server:applyPaint', function(payload)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not payload or not payload.item then return end
+
+    local itemName = payload.item
+    local it = Player.Functions.GetItemByName(itemName)
+    if not it then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: '..tostring(itemName), 'error')
+        return
+    end
+
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to consume '..tostring(itemName), 'error')
+        return
+    end
+
+    -- Broadcast to all clients
+    TriggerClientEvent('pf_mech:client:paintApplied', -1, {
+        vehicle = payload.vehicle,
+        item = itemName,
+        category = payload.category,
+        rgb = payload.rgb,
+        preset = payload.preset,
+        tintLevel = payload.tintLevel
+    })
+
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+end)
+
+-- Server: apply wheel mod
+RegisterNetEvent('pf_mech:server:applyWheels', function(payload)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not payload or not payload.item then return end
+
+    local itemName = payload.item
+    local it = Player.Functions.GetItemByName(itemName)
+    if not it then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: '..tostring(itemName), 'error')
+        return
+    end
+
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to consume '..tostring(itemName), 'error')
+        return
+    end
+
+    -- Broadcast to all clients
+    TriggerClientEvent('pf_mech:client:wheelsApplied', -1, {
+        vehicle = payload.vehicle,
+        wheelType = payload.wheelType,
+        wheelIndex = payload.wheelIndex,
+        wheelColor = payload.wheelColor
+    })
+
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+end)
+
+-- Service Book: add entry
+RegisterNetEvent('pf_mech:service:addEntry', function(plate, data)
+    local src = source
+    
+    if not isMechanic(src) then
+        TriggerClientEvent('QBCore:Notify', src, 'Not a mechanic', 'error')
+        return
+    end
+    
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
+    if plate == '' then
+        TriggerClientEvent('QBCore:Notify', src, 'Invalid plate', 'error')
+        return
+    end
+
+    local title       = tostring(data and data.title or ''):sub(1,80)
+    local serviceText = tostring(data and data.service or ''):sub(1,2000)
+    local svcdesc     = tostring(data and data.service_description or ''):sub(1,2000)
+    local serviced_by = tostring(data and data.serviced_by or ''):sub(1,80)
+    local location    = tostring(data and data.location or ''):sub(1,80)
+    local mileage     = tonumber(data and data.mileage) or 0
+    local model       = tostring(data and data.model or ''):sub(1,60)
+    local color       = tostring(data and data.color or ''):sub(1,40)
+    local paint       = tostring(data and data.paint or ''):sub(1,120)
+    local svcdate     = os.date('%Y-%m-%d')
+
+    if title == '' or serviceText == '' or serviced_by == '' or location == '' then
+        TriggerClientEvent('QBCore:Notify', src, 'Required fields missing', 'error')
+        return
+    end
+
+    local insertId = MySQL.insert.await(
+        'INSERT INTO pf_service_book (plate,model,color,paint,title,service,service_description,svc_date,mileage,serviced_by,location) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        { plate, model, color, paint, title, serviceText, svcdesc, svcdate, mileage, serviced_by, location }
+    )
+
+    if Config.Debug then
+        print(string.format('[SERVICE BOOK] Inserted id=%s plate=%s title=%s', tostring(insertId), plate, title))
+    end
+
+    TriggerClientEvent('QBCore:Notify', src, 'Service entry saved', 'success')
+    Wait(120)
+    TriggerClientEvent('pf_mech:service:refresh', src, plate)
+end)
+
+-- Service Book: get entries (FINAL - actually queries database)
+QBCore.Functions.CreateCallback('pf_mech:service:get', function(source, cb, plate)
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
+    if plate == '' then cb({}) return end
+    
+    local rows = MySQL.query.await(
+        'SELECT id, plate, model, paint, title, service, service_description, svc_date, mileage, serviced_by, location FROM pf_service_book WHERE plate = ? ORDER BY id DESC LIMIT 50',
+        { plate }
+    ) or {}
+    if Config.Debug then
+        print(string.format('[SERVICE BOOK] Fetch %d rows for %s', #rows, plate))
+    end
+    cb(rows)
+end)
+
+-- SERVICE BOOK TABLE ENSURE (REPLACED - now creates/updates needed columns)
+local function ensureServiceBookTable()
+    MySQL.query.await([[
+        CREATE TABLE IF NOT EXISTS pf_service_book (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            plate VARCHAR(16) NOT NULL,
+            model VARCHAR(60) NOT NULL DEFAULT '',
+            color VARCHAR(40) NOT NULL DEFAULT '',
+            paint VARCHAR(120) NOT NULL DEFAULT '',
+            title VARCHAR(80) NOT NULL,
+            service TEXT NOT NULL,
+            service_description TEXT NOT NULL,
+            svc_date VARCHAR(32) NOT NULL,
+            mileage INT NOT NULL DEFAULT 0,
+            serviced_by VARCHAR(80) NOT NULL DEFAULT '',
+            location VARCHAR(80) NOT NULL DEFAULT '',
+            KEY plate_idx (plate)
+        )
+    ]])
+end
+
+AddEventHandler('onResourceStart', function(res)
+    if res ~= resource then return end
+    ensureServiceBookTable()
+    -- Seed POS items per business if empty
+    for key, branding in pairs(Config.BusinessBranding or {}) do
+        local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { branding.business }) or 0
+        if cnt == 0 and Config.CatalogSeed then
+            for _, it in ipairs(Config.CatalogSeed) do
+                MySQL.insert.await(
+                    'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
+                    { branding.business, it.id, it.category, it.label, it.price }
+                )
+            end
+        end
+    end
+end)
+
+-- ============================================================================
+-- ROLLING COAL SYSTEM
+-- ============================================================================
+
+-- Set coal delete state for a vehicle
+RegisterNetEvent('pf_mech:setCoalDelete', function(plate, enabled)
+    local src = source
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then return end
+    
+    -- Verify player owns this vehicle
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    
+    local result = MySQL.single.await('SELECT citizenid FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
+    if not result or result.citizenid ~= Player.PlayerData.citizenid then
+        TriggerClientEvent('QBCore:Notify', src, 'You do not own this vehicle', 'error')
+        return
+    end
+    
+    -- Update database (store in mods JSON)
+    MySQL.update.await([[
+        UPDATE player_vehicles 
+        SET mods = JSON_SET(COALESCE(mods, '{}'), '$.coalDelete', ?)
+        WHERE plate = ?
+    ]], { enabled and true or false, plate })
+    
+    -- Broadcast to all clients (so they see the smoke)
+    TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, enabled)
+    
+    if Config.Debug then
+        print(string.format('[COAL] %s coal delete %s for %s', 
+            Player.PlayerData.name, 
+            enabled and 'enabled' or 'disabled', 
+            plate))
+    end
+end)
+
+-- Load coal delete state on vehicle spawn
+QBCore.Functions.CreateCallback('pf_mech:getCoalState', function(source, cb, plate)
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then cb(false); return end
+    
+    local result = MySQL.single.await('SELECT mods FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
+    
+    if result and result.mods then
+        local mods = json.decode(result.mods)
+        cb(mods and mods.coalDelete or false)
+    else
+        cb(false)
+    end
+end)
+
+-- ============================================================================
+-- ROLLING COAL SYSTEM (SERVER SYNC)
+-- ============================================================================
+
+-- Sync coal particles to all clients
+RegisterNetEvent('pf_mech:coal:syncStart', function(netId)
+    if not (Config.RollingCoal and Config.RollingCoal.enabled) then return end
+    TriggerClientEvent('pf_mech:coal:startParticles', -1, netId)
+end)
+
+RegisterNetEvent('pf_mech:coal:syncStop', function(netId)
+    TriggerClientEvent('pf_mech:coal:stopParticles', -1, netId)
+end)
+
+-- Set coal delete state for a vehicle
+RegisterNetEvent('pf_mech:setCoalDelete', function(plate, enabled)
+    local src = source
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then return end
+    
+    -- Verify player owns this vehicle
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    
+    local result = MySQL.single.await('SELECT citizenid FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
+    if not result or result.citizenid ~= Player.PlayerData.citizenid then
+        TriggerClientEvent('QBCore:Notify', src, 'You do not own this vehicle', 'error')
+        return
+    end
+    
+    -- Update database (store in mods JSON)
+    MySQL.update.await([[
+        UPDATE player_vehicles 
+        SET mods = JSON_SET(COALESCE(mods, '{}'), '$.coalDelete', ?)
+        WHERE plate = ?
+    ]], { enabled and true or false, plate })
+    
+    -- Broadcast to all clients (so they see the smoke)
+    TriggerClientEvent('pf_mech:syncCoalDelete', -1, plate, enabled)
+    
+    if Config.Debug then
+        print(string.format('[COAL] %s coal delete %s for %s', 
+            Player.PlayerData.name, 
+            enabled and 'enabled' or 'disabled', 
+            plate))
+    end
+end)
+
+-- Load coal delete state on vehicle spawn
+QBCore.Functions.CreateCallback('pf_mech:getCoalState', function(source, cb, plate)
+    plate = tostring(plate or ''):gsub('%s+', ''):upper()
+    if plate == '' then cb(false); return end
+    
+    local result = MySQL.single.await('SELECT mods FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
+    
+    if result and result.mods then
+        local mods = json.decode(result.mods)
+        cb(mods and mods.coalDelete or false)
+    else
+        cb(false)
+    end
+end)
+
+RegisterServerEvent("Smoke:SyncStartParticles")
+AddEventHandler("Smoke:SyncStartParticles", function(carid)
+    TriggerClientEvent("Smoke:StartParticles", -1, carid)
+end)
+
+RegisterServerEvent("Smoke:SyncStopParticles")
+AddEventHandler("Smoke:SyncStopParticles", function(carid)
+    TriggerClientEvent("Smoke:StopParticles", -1, carid)
+end)
+
+-- Rolling coal particle relays
+RegisterNetEvent('pf_mech:coal:syncStart', function(netId)
+    if not Config.RollingCoal.enabled then return end
+    
+    -- NEW: Debug
+    if Config.Debug then
+        print(string.format('[COAL SERVER] Broadcasting start for netId: %s from source: %d', tostring(netId), source))
+    end
+    
+    TriggerClientEvent('pf_mech:coal:startParticles', -1, netId)
+end)
+RegisterNetEvent('pf_mech:coal:syncStop', function(netId)
+    -- NEW: Debug
+    if Config.Debug then
+        print(string.format('[COAL SERVER] Broadcasting stop for netId: %s', tostring(netId)))
+    end
+    
+    TriggerClientEvent('pf_mech:coal:stopParticles', -1, netId)
+end)
+
+-- No diagnostics modifications needed (DPF & coal remain).
+
+QBCore.Functions.CreateCallback('pf_mech:hasDPFItem', function(source, cb)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then cb(false) return end
+    local item = Player.Functions.GetItemByName(Config.DPFItem)
+    cb(item ~= nil)
+end)
+
+-- NEW: Apply performance upgrade (consume item and broadcast)
+RegisterNetEvent('pf_mech:server:applyPerformanceUpgrade', function(data)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player or not data then return end
+    
+    local itemName = data.item
+    local modType = data.modType
+    local modIndex = data.modIndex
+    local isToggle = data.isToggle
+    local vehicleNet = data.vehicle
+    
+    -- Verify item exists
+    local item = Player.Functions.GetItemByName(itemName)
+    if not item then
+        TriggerClientEvent('QBCore:Notify', src, 'Missing required item: ' .. tostring(itemName), 'error')
+        return
+    end
+    
+    -- Remove item
+    local removed = Player.Functions.RemoveItem(itemName, 1)
+    if not removed then
+        TriggerClientEvent('QBCore:Notify', src, 'Failed to remove item: ' .. tostring(itemName), 'error')
+        return
+    end
+    
+    -- Broadcast to all clients to apply the upgrade (FIX: send both event names)
+    TriggerClientEvent('pf_mechanicjob:client:upgradeApplied', -1, {
+        vehicle = vehicleNet,
+        modType = modType,
+        modIndex = modIndex,
+        isToggle = isToggle
+    })
+    TriggerClientEvent('pf_mech:client:upgradeApplied', -1, { -- compatibility
+        vehicle = vehicleNet,
+        modType = modType,
+        modIndex = modIndex,
+        isToggle = isToggle
+    })
+    if Config.Debug then
+        print(string.format('[PERF UPGRADE SERVER] %s applied to net %s (toggle=%s)', tostring(itemName), tostring(vehicleNet), tostring(isToggle)))
+    end
+    
+    -- Show item box
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "remove")
+    TriggerClientEvent('QBCore:Notify', src, 'Upgrade installed', 'success')
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SERVICE BOOK - SINGLE SOURCE OF TRUTH
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Service Book: table ensure (reverted working version)
+local function ensureServiceBookTable()
+    MySQL.query.await([[
+        CREATE TABLE IF NOT EXISTS pf_service_book (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            plate VARCHAR(16) NOT NULL,
+            model VARCHAR(60) NOT NULL DEFAULT '',
+            color VARCHAR(40) NOT NULL DEFAULT '',
+            paint VARCHAR(120) NOT NULL DEFAULT '',
+            title VARCHAR(80) NOT NULL,
+            service TEXT NOT NULL,
+            service_description TEXT NOT NULL,
+            svc_date VARCHAR(32) NOT NULL,
+            mileage INT NOT NULL DEFAULT 0,
+            serviced_by VARCHAR(80) NOT NULL DEFAULT '',
+            location VARCHAR(80) NOT NULL DEFAULT '',
+            KEY plate_idx (plate)
+        )
+    ]])
+end
+
+AddEventHandler('onResourceStart', function(res)
+    if res ~= resource then return end
+    ensureServiceBookTable()
+    -- Seed POS items per business if empty
+    for key, branding in pairs(Config.BusinessBranding or {}) do
+        local cnt = MySQL.scalar.await('SELECT COUNT(*) FROM pf_pos_items WHERE business = ?', { branding.business }) or 0
+        if cnt == 0 and Config.CatalogSeed then
+            for _, it in ipairs(Config.CatalogSeed) do
+                MySQL.insert.await(
+                    'INSERT INTO pf_pos_items (business, item_id, category, label, price) VALUES (?, ?, ?, ?, ?)',
+                    { branding.business, it.id, it.category, it.label, it.price }
+                )
+            end
+        end
+    end
+end)
+
+local function isMechanic(src)
+    local p = QBCore.Functions.GetPlayer(src)
+    return p and p.PlayerData and p.PlayerData.job and Config.IsMechanicJob(p.PlayerData.job.name) or false
+end
+
+-- SINGLE handler: add entry
+RegisterNetEvent('pf_mech:service:addEntry', function(plate, data)
+    local src = source
+    if not isMechanic(src) then
+        TriggerClientEvent('QBCore:Notify', src, 'Not a mechanic', 'error')
+        return
+    end
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
+    if plate == '' then
+        TriggerClientEvent('QBCore:Notify', src, 'Invalid plate', 'error')
+        return
+    end
+
+    local title       = tostring(data.title or ''):sub(1,80)
+    local serviceText = tostring(data.service or ''):sub(1,2000)
+    local svcdesc     = tostring(data.service_description or ''):sub(1,2000)
+    local serviced_by = tostring(data.serviced_by or ''):sub(1,80)
+    local location    = tostring(data.location or ''):sub(1,80)
+    local mileage     = tonumber(data.mileage) or 0
+    local model       = tostring(data.model or ''):sub(1,60)
+    local color       = tostring(data.color or ''):sub(1,40)
+    local paint       = tostring(data.paint or ''):sub(1,120)
+    local svcdate     = os.date('%Y-%m-%d')
+
+    if title=='' or serviceText=='' or serviced_by=='' or location=='' then
+        TriggerClientEvent('QBCore:Notify', src, 'Required fields missing', 'error')
+        return
+    end
+
+    MySQL.insert.await(
+        'INSERT INTO pf_service_book (plate,model,color,paint,title,service,service_description,svc_date,mileage,serviced_by,location) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        { plate, model, color, paint, title, serviceText, svcdesc, svcdate, mileage, serviced_by, location }
+    )
+
+    TriggerClientEvent('QBCore:Notify', src, 'Service entry saved', 'success')
+    Wait(100)
+    TriggerClientEvent('pf_mech:service:refresh', src, plate)
+end)
+
+-- SINGLE callback: get entries
+QBCore.Functions.CreateCallback('pf_mech:service:get', function(source, cb, plate)
+    plate = tostring(plate or ''):gsub('%s+',''):upper()
+    if plate == '' then cb({}) return end
+    local rows = MySQL.query.await(
+        'SELECT id, plate, model, paint, title, service, service_description, svc_date, mileage, serviced_by, location FROM pf_service_book WHERE plate = ? ORDER BY id DESC LIMIT 50',
+        { plate }
+    ) or {}
+    cb(rows)
+end)
+
+-- NOS install completion (consume full bottle)
+RegisterNetEvent('pf_mech:nos:finishInstall', function(success)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    if not success then return end
+    local removed = Player.Functions.RemoveItem('nos', 1)
+    if removed and QBCore.Shared.Items['nos'] then
+        TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['nos'], 'remove', 1)
+    end
+end)
+
+-- Update NOS level (persist to state only; DB persistence optional)
+RegisterNetEvent('pf_mech:nos:updateLevel', function(netId, newLevel)
+    local veh = NetworkGetEntityFromNetworkId(netId or 0)
+    if veh == 0 or not DoesEntityExist(veh) then return end
+    local st = Entity(veh).state.nos
+    if st then
+        st.level = math.max(0, tonumber(newLevel) or 0)
+        Entity(veh).state:set('nos', st, true)
+    end
+end)
+
+
+
+-- Debug helper
+QBCore.Commands.Add('nosstate','Print vehicle NOS state',{},false,function(src)
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+    TriggerClientEvent('pf_mech:nos:debugPrint', src)
+end)
+

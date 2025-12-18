@@ -1,3 +1,42 @@
+-- Ensure qb-garages compatibility (safe to run anytime)
+ALTER TABLE `player_vehicles`
+  ADD COLUMN IF NOT EXISTS `mods` LONGTEXT NULL,
+  ADD INDEX IF NOT EXISTS `idx_plate` (`plate`);
+
+-- NEW: Dedicated vehicle diagnostics table
+CREATE TABLE IF NOT EXISTS `vehicle_diagnostics` (
+  `plate` varchar(50) NOT NULL,
+  `citizenid` varchar(50) DEFAULT NULL,
+
+  `alternator` float DEFAULT 0,
+  `sparkplugs` float DEFAULT 0,
+  `carbattery` float DEFAULT 0,
+  `oil` float DEFAULT 0,
+  `oil_filter` float DEFAULT 0,
+  `brakes` float DEFAULT 0,
+  `suspension` float DEFAULT 0,
+  `axle` float DEFAULT 0,
+  `fuel_injector` float DEFAULT 0,
+  `powersteeringpump` float DEFAULT 0,
+  `radiator` float DEFAULT 0,
+  `power_steering_fluid` float DEFAULT 0,
+  `transmissionfluid` float DEFAULT 0,
+  `brakefluid` float DEFAULT 0,
+  `coolant` float DEFAULT 0,
+
+  `engine_part` float DEFAULT 0,
+  `body_part` float DEFAULT 0,
+
+  `mileage` double DEFAULT 0,
+  `engineHealth` float DEFAULT 1000,
+  `bodyHealth` float DEFAULT 1000,
+  `tankHealth` float DEFAULT 1000,
+  `dirtLevel` float DEFAULT 0,
+
+  PRIMARY KEY (`plate`),
+  KEY `citizenid_idx` (`citizenid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS pf_parts_catalog (
   part_id VARCHAR(64) PRIMARY KEY,
   label VARCHAR(64) NOT NULL,
@@ -64,3 +103,24 @@ CREATE TABLE IF NOT EXISTS pf_job_history (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX (citizenid), INDEX (plate)
 );
+
+CREATE TABLE IF NOT EXISTS `pf_service_log` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `plate` VARCHAR(16) NOT NULL,
+  `citizenid` VARCHAR(64) NOT NULL,
+  `author` VARCHAR(128) NOT NULL,
+  `note` TEXT NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_plate` (`plate`),
+  KEY `idx_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- NOS: persist basic state on the base vehicle table (idempotent)
+ALTER TABLE `player_vehicles`
+  ADD COLUMN IF NOT EXISTS `hasnitrom` TINYINT(1) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS `noslevel`  INT        NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS `noscolor`  VARCHAR(16) NULL DEFAULT NULL;
+
+-- Optional: If you want mileage persisted in DB (alternatively use entity statebag)
+ALTER TABLE `player_vehicles` ADD COLUMN IF NOT EXISTS `mileage` FLOAT DEFAULT 0.0;
